@@ -1,10 +1,8 @@
 name: "1. Fetch Candle Data"
 
 on:
-  # Run at 8am UTC Mon-Fri (market is open, fresh data)
   schedule:
     - cron: "0 8 * * 1-5"
-  # Allow manual trigger for testing
   workflow_dispatch:
 
 jobs:
@@ -16,15 +14,6 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # Restore previously cached candle data (so we don't re-fetch already-good tickers)
-      - name: Restore candle cache
-        uses: actions/cache@v4
-        with:
-          path: cache/
-          key: candles-${{ runner.os }}-${{ github.run_id }}
-          restore-keys: |
-            candles-${{ runner.os }}-
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -34,10 +23,8 @@ jobs:
         run: pip install yfinance pandas numpy lxml html5lib beautifulsoup4
 
       - name: Fetch candle data
-        env:
         run: python fetch.py
 
-      # Save cache so the analyze workflow can access it
       - name: Upload candle cache artifact
         uses: actions/upload-artifact@v4
         with:
