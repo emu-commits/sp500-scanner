@@ -25,10 +25,8 @@ jobs:
       - name: Fetch candle data
         run: python fetch.py
 
-      - name: Upload candle cache artifact
-        uses: actions/upload-artifact@v4
+      - name: Save candle cache
+        uses: actions/cache@v4
         with:
-          name: candle-cache
-          path: cache/candles.json
-          retention-days: 2
-          overwrite: true
+          path: cache/
+          key: candles-${{ runner.os }}

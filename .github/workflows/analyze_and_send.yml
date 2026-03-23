@@ -1,7 +1,6 @@
 name: "2. Analyze & Send Report"
 
 on:
-  # 11pm UTC Sun-Thu = evening US time (Sun = Monday pre-market, etc.)
   schedule:
     - cron: "0 23 * * 0-4"
   workflow_dispatch:
@@ -15,11 +14,13 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Download candle cache from fetch workflow
-        uses: actions/download-artifact@v4
+      - name: Restore candle cache
+        uses: actions/cache@v4
         with:
-          name: candle-cache
           path: cache/
+          key: candles-${{ runner.os }}
+          restore-keys: |
+            candles-${{ runner.os }}-
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -27,7 +28,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests pandas numpy
+        run: pip install pandas numpy
 
       - name: Run analysis
         run: python analyze.py
@@ -38,8 +39,7 @@ jobs:
       - name: Read subscriber list
         id: subscribers
         run: |
-          # Read emails from subscribers.json and join with comma
-          EMAILS=$(python -c "
+          EMAILS=$(python3 -c "
           import json
           with open('subscribers.json') as f:
               subs = json.load(f)
@@ -50,7 +50,7 @@ jobs:
       - name: Read signal counts for subject line
         id: counts
         run: |
-          python -c "
+          python3 -c "
           import json, os
           with open('cache/results.json') as f:
               r = json.load(f)
