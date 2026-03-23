@@ -57,6 +57,14 @@ def signal_row(item, is_buy):
     rsi_ok = 45 <= rsi <= 72 if is_buy else rsi < 45
     if rsi_ok:
         indicators.append((f"RSI {rsi}", "#f5c84222", "#f5c842"))
+    proximity = item.get("proximity_52w", 0)
+    if is_buy and proximity >= 0.85:
+        indicators.append((f"52W {int(proximity*100)}%", "#a855f722", "#a855f7"))
+    elif not is_buy and proximity <= 0.85:
+        indicators.append((f"52W {int(proximity*100)}%", "#a855f722", "#a855f7"))
+    vol = item.get("vol_trend", 1.0)
+    if vol >= 1.2:
+        indicators.append((f"Vol ↑{vol:.1f}x", "#06b6d422", "#06b6d4"))
 
     pills = "".join([
         f'<span style="display:inline-block;background:{bg};color:{fg};'
@@ -243,7 +251,7 @@ def render_email(results):
                   </div>
                 </td>""" for g in ["A","B","C","D","F"]])}
                 <td style="font-size:10px;color:#333;text-align:right;">
-                  RSI · MACD · ADX<br>OBV · BB
+                  RSI · MACD · ADX<br>OBV · BB · 52W · Vol
                 </td>
               </tr>
             </table>

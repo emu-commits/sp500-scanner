@@ -11,7 +11,7 @@ import numpy as np
 
 CACHE_FILE = "cache/candles.json"
 RESULTS_FILE = "cache/results.json"
-LOOKBACK_DAYS = 22  # ~1 trading month
+LOOKBACK_DAYS = 14  # ~2 trading weeks
 
 
 def load_cache():
@@ -81,6 +81,27 @@ def compute_bb_position(closes, period=20):
     return (last_close - last_lower) / band_width  # 0=at lower, 1=at upper
 
 
+def compute_52w_proximity(closes, highs):
+    """How close is current price to 52-week high? 1.0 = at high, 0.0 = far below."""
+    window = min(252, len(closes))
+    high_52w = max(highs[-window:])
+    if high_52w == 0:
+        return 0
+    return closes[-1] / high_52w
+
+
+def compute_volume_trend(volumes):
+    """Ratio of 10-day avg volume to 50-day avg volume. >1 = rising volume."""
+    v = pd.Series(volumes)
+    if len(v) < 50:
+        return 1.0
+    avg10 = v.iloc[-10:].mean()
+    avg50 = v.iloc[-50:].mean()
+    if avg50 == 0:
+        return 1.0
+    return float(avg10 / avg50)
+
+
 def find_cross_event(ma_fast, ma_slow, lookback):
     """
     Returns (cross_found, days_ago) for most recent cross in lookback window.
@@ -142,7 +163,6 @@ def analyze_ticker(ticker, data):
 
     # --- Scoring (for golden cross; inverted for death) ---
     score = 0
-    max_score = 5
 
     try:
         rsi = compute_rsi(closes)
@@ -169,10 +189,22 @@ def analyze_ticker(ticker, data):
     except:
         bb_pos = 0.5
 
+    try:
+        proximity_52w = compute_52w_proximity(closes, highs)
+    except:
+        proximity_52w = 0.5
+
+    try:
+        vol_trend = compute_volume_trend(volumes)
+    except:
+        vol_trend = 1.0
+
+    max_score = 7
+
     if cross_type == "golden":
-        # RSI: healthy uptrend = 50-70 (not overbought)
+        # RSI: healthy uptrend = 50-72 (not overbought)
         score += 1 if 45 <= rsi <= 72 else (0.5 if rsi > 72 else 0)
-        # MACD: histogram positive and growing
+        # MACD: histogram positive and MACD above signal
         score += 1 if macd_hist > 0 and macd_val > macd_sig else (0.5 if macd_hist > 0 else 0)
         # ADX: strong trend
         score += 1 if adx >= 25 else (0.5 if adx >= 20 else 0)
@@ -180,8 +212,12 @@ def analyze_ticker(ticker, data):
         score += 1 if obv_slope > 0 else 0
         # BB: price in upper half but not extreme
         score += 1 if 0.5 <= bb_pos <= 0.9 else (0.5 if bb_pos > 0.9 else 0)
+        # 52-week high proximity: within 15% of high = breakout territory
+        score += 1 if proximity_52w >= 0.90 else (0.5 if proximity_52w >= 0.85 else 0)
+        # Volume trend: recent volume expanding (conviction behind the move)
+        score += 1 if vol_trend >= 1.2 else (0.5 if vol_trend >= 1.0 else 0)
     else:  # death cross
-        # RSI: weak (below 50)
+        # RSI: weak
         score += 1 if rsi < 45 else (0.5 if rsi < 50 else 0)
         # MACD: histogram negative
         score += 1 if macd_hist < 0 and macd_val < macd_sig else (0.5 if macd_hist < 0 else 0)
@@ -191,6 +227,10 @@ def analyze_ticker(ticker, data):
         score += 1 if obv_slope < 0 else 0
         # BB: price in lower half
         score += 1 if bb_pos <= 0.4 else (0.5 if bb_pos < 0.5 else 0)
+        # 52-week high proximity: far from high = sustained weakness
+        score += 1 if proximity_52w <= 0.75 else (0.5 if proximity_52w <= 0.85 else 0)
+        # Volume trend: expanding volume on decline = distribution
+        score += 1 if vol_trend >= 1.2 else (0.5 if vol_trend >= 1.0 else 0)
 
     grade = grade_score(score, max_score)
 
@@ -208,6 +248,8 @@ def analyze_ticker(ticker, data):
         "macd_positive": bool(macd_hist > 0),
         "obv_accumulating": bool(obv_slope > 0),
         "bb_position": round(float(bb_pos), 2),
+        "proximity_52w": round(float(proximity_52w), 2),
+        "vol_trend": round(float(vol_trend), 2),
         "price": round(float(price), 2),
         "price_change_5d_pct": round(float(price_change_pct), 1),
     }

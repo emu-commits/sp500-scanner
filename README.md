@@ -1,8 +1,8 @@
 # S&P 500 Cross Scanner
 
-Nightly email report identifying S&P 500 stocks with recent **golden cross** (buy) or **death cross** (sell) events, graded A–F using a composite of five technical indicators.
+Nightly email report identifying S&P 500 stocks with a recent **golden cross** (buy watch) or **death cross** (sell watch), graded A–F using a composite of seven technical indicators.
 
-Runs entirely free on GitHub Actions. Sends via Gmail SMTP.
+Runs entirely free on GitHub Actions. No paid APIs required.
 
 ---
 
@@ -10,8 +10,10 @@ Runs entirely free on GitHub Actions. Sends via Gmail SMTP.
 
 | Workflow | Schedule | What it does |
 |---|---|---|
-| `fetch.yml` | 8am UTC Mon–Fri | Pulls 1yr daily candles for all ~500 S&P tickers from Finnhub (~9 min at 54 req/min) |
+| `fetch.yml` | 8am UTC Mon–Fri | Bulk-downloads 14 months of daily OHLCV for all ~500 S&P tickers via yfinance (~5 min) |
 | `analyze_and_send.yml` | 11pm UTC Sun–Thu | Analyzes cached data, renders email, sends to all subscribers |
+
+Data is shared between workflows via the GitHub Actions cache.
 
 ---
 
@@ -25,21 +27,20 @@ Go to **Settings → Secrets and variables → Actions → New repository secret
 
 | Secret | Value |
 |---|---|
-| `FINNHUB_API_KEY` | Your Finnhub free API key from [finnhub.io](https://finnhub.io) |
-| `GMAIL_USER` | The Gmail address you'll send from (e.g. `myreports@gmail.com`) |
-| `GMAIL_APP_PASSWORD` | A Gmail App Password (not your regular password — see below) |
+| `GMAIL_USER` | The Gmail address you'll send from |
+| `GMAIL_APP_PASSWORD` | A Gmail App Password (see below) |
 
 ### 3. Create a Gmail App Password
 
 1. Go to your Google Account → **Security**
 2. Enable **2-Step Verification** if not already on
 3. Search for **"App passwords"**
-4. Create a new app password (name it anything, e.g. "GitHub Scanner")
+4. Create a new app password, name it "GitHub Scanner"
 5. Copy the 16-character password → paste as `GMAIL_APP_PASSWORD` secret
 
 ### 4. Edit subscribers
 
-Edit `subscribers.json` to add/remove recipient email addresses:
+Edit `subscribers.json`:
 
 ```json
 {
@@ -50,35 +51,33 @@ Edit `subscribers.json` to add/remove recipient email addresses:
 }
 ```
 
-Commit and push — no code changes needed to add subscribers.
-
 ---
 
-## Signals Explained
+## Signals
 
 ### Buy Watch (Golden Cross)
-- MA50 crossed **above** MA200 within the last 22 trading days
-- MA50 is still above MA200 today (uptrend confirmed)
+MA50 crossed **above** MA200 within the last **14 trading days**, still in uptrend.
 
 ### Sell Watch (Death Cross)
-- MA50 crossed **below** MA200 within the last 22 trading days
-- MA50 is still below MA200 today (downtrend confirmed)
+MA50 crossed **below** MA200 within the last **14 trading days**, still in downtrend.
 
 ---
 
 ## Composite Grade (A–F)
 
-Five indicators, each worth 1 point (partial credit possible):
+Seven indicators, each worth 1 point (partial credit possible):
 
-| Indicator | Buy signal looks for | Sell signal looks for |
+| Indicator | Buy looks for | Sell looks for |
 |---|---|---|
-| **RSI** | 45–72 (healthy momentum, not overbought) | < 45 (weak/oversold territory) |
-| **MACD** | Histogram positive, MACD > signal | Histogram negative, MACD < signal |
-| **ADX** | ≥ 25 (strong trend) | ≥ 25 (strong trend in either direction) |
+| **RSI** | 45–72 (healthy, not overbought) | < 45 (weak) |
+| **MACD** | Histogram positive, MACD > signal | Histogram negative |
+| **ADX** | ≥ 25 (strong trend) | ≥ 25 (strong trend) |
 | **OBV** | Rising (accumulation) | Falling (distribution) |
-| **Bollinger Band position** | Price in upper half (0.5–0.9) | Price in lower half (< 0.4) |
+| **Bollinger Band** | Price in upper half (0.5–0.9) | Price in lower half (< 0.4) |
+| **52-week proximity** | Within 15% of 52W high | More than 25% below 52W high |
+| **Volume trend** | 10d avg ≥ 1.2× 50d avg | 10d avg ≥ 1.2× 50d avg |
 
-Scores map to grades: A (85%+), B (70%+), C (55%+), D (40%+), F (<40%)
+Grades: A (85%+) · B (70%+) · C (55%+) · D (40%+) · F (<40%)
 
 ---
 
@@ -86,20 +85,13 @@ Scores map to grades: A (85%+), B (70%+), C (55%+), D (40%+), F (<40%)
 
 ```bash
 pip install -r requirements.txt
-
-export FINNHUB_API_KEY=your_key_here
-
-python fetch.py       # ~9 min, saves cache/candles.json
-python analyze.py     # fast, saves cache/results.json
-python render_email.py  # saves cache/email.html — open in browser to preview
+python fetch.py          # saves cache/candles.json
+python analyze.py        # saves cache/results.json
+python render_email.py   # saves cache/email.html — open in browser to preview
 ```
 
 ---
 
 ## Cost
 
-**Completely free:**
-- GitHub Actions: ~10 min/day well within free tier (2,000 min/month)
-- Finnhub: free tier (60 req/min, 1yr history) ✓
-- Gmail SMTP: free ✓
-- Wikipedia S&P 500 list: free ✓
+Completely free — yfinance (no key), Gmail SMTP, GitHub Actions free tier.
