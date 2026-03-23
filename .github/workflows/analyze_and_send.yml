@@ -1,0 +1,76 @@
+name: "2. Analyze & Send Report"
+
+on:
+  # 11pm UTC Sun-Thu = evening US time (Sun = Monday pre-market, etc.)
+  schedule:
+    - cron: "0 23 * * 0-4"
+  workflow_dispatch:
+
+jobs:
+  analyze-and-send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Download candle cache from fetch workflow
+        uses: actions/download-artifact@v4
+        with:
+          name: candle-cache
+          path: cache/
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests pandas numpy
+
+      - name: Run analysis
+        run: python analyze.py
+
+      - name: Render email HTML
+        run: python render_email.py
+
+      - name: Read subscriber list
+        id: subscribers
+        run: |
+          # Read emails from subscribers.json and join with comma
+          EMAILS=$(python -c "
+          import json
+          with open('subscribers.json') as f:
+              subs = json.load(f)
+          print(','.join(subs['emails']))
+          ")
+          echo "emails=$EMAILS" >> $GITHUB_OUTPUT
+
+      - name: Read signal counts for subject line
+        id: counts
+        run: |
+          python -c "
+          import json, os
+          with open('cache/results.json') as f:
+              r = json.load(f)
+          buy = len(r['buy'])
+          sell = len(r['sell'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'buy={buy}\n')
+              f.write(f'sell={sell}\n')
+          "
+
+      - name: Send email report
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.GMAIL_USER }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: "📊 S&P 500 Signals: ${{ steps.counts.outputs.buy }} Buy · ${{ steps.counts.outputs.sell }} Sell"
+          to: ${{ steps.subscribers.outputs.emails }}
+          from: "S&P Scanner <${{ secrets.GMAIL_USER }}>"
+          html_body: file://cache/email.html
+          priority: normal
