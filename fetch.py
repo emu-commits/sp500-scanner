@@ -1,606 +1,78 @@
 """
 S&P 500 Candle Fetcher — fetch.py
-Fetches daily candle data from Finnhub in a single batch run.
-GitHub Actions free tier: up to 6 hours runtime, so we stay well within 60 req/min.
-Rate limiting: sleep 1.1s between calls = ~54 req/min, safely under the 60/min limit.
-~500 tickers × 1.1s ≈ 9.2 minutes total.
+Uses yfinance (Yahoo Finance) — no API key required.
+~500 tickers, runs in ~5-8 minutes.
 """
 import json
 import os
 import sys
-import time
-import requests
+import yfinance as yf
+import pandas as pd
 from datetime import datetime, timedelta
 
-FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY")
 CACHE_FILE = "cache/candles.json"
-SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-
-SLEEP_BETWEEN_CALLS = 1.1  # seconds — keeps us under 60/min
 
 
 def get_sp500_tickers():
-    return [
-        "MMM",
-        "AOS",
-        "ABT",
-        "ABBV",
-        "ACN",
-        "ADBE",
-        "AMD",
-        "AES",
-        "AFL",
-        "A",
-        "APD",
-        "ABNB",
-        "AKAM",
-        "ALB",
-        "ARE",
-        "ALGN",
-        "ALLE",
-        "LNT",
-        "ALL",
-        "GOOGL",
-        "GOOG",
-        "MO",
-        "AMZN",
-        "AMCR",
-        "AEE",
-        "AEP",
-        "AXP",
-        "AIG",
-        "AMT",
-        "AWK",
-        "AMP",
-        "AME",
-        "AMGN",
-        "APH",
-        "ADI",
-        "AON",
-        "APA",
-        "APO",
-        "AAPL",
-        "AMAT",
-        "APP",
-        "APTV",
-        "ACGL",
-        "ADM",
-        "ARES",
-        "ANET",
-        "AJG",
-        "AIZ",
-        "T",
-        "ATO",
-        "ADSK",
-        "ADP",
-        "AZO",
-        "AVB",
-        "AVY",
-        "AXON",
-        "BKR",
-        "BALL",
-        "BAC",
-        "BAX",
-        "BDX",
-        "BRK-B",
-        "BBY",
-        "TECH",
-        "BIIB",
-        "BLK",
-        "BX",
-        "XYZ",
-        "BK",
-        "BA",
-        "BKNG",
-        "BSX",
-        "BMY",
-        "AVGO",
-        "BR",
-        "BRO",
-        "BF-B",
-        "BLDR",
-        "BG",
-        "BXP",
-        "CHRW",
-        "CDNS",
-        "CPT",
-        "CPB",
-        "COF",
-        "CAH",
-        "CCL",
-        "CARR",
-        "CVNA",
-        "CAT",
-        "CBOE",
-        "CBRE",
-        "CDW",
-        "COR",
-        "CNC",
-        "CNP",
-        "CF",
-        "CRL",
-        "SCHW",
-        "CHTR",
-        "CVX",
-        "CMG",
-        "CB",
-        "CHD",
-        "CIEN",
-        "CI",
-        "CINF",
-        "CTAS",
-        "CSCO",
-        "C",
-        "CFG",
-        "CLX",
-        "CME",
-        "CMS",
-        "KO",
-        "CTSH",
-        "COIN",
-        "CL",
-        "CMCSA",
-        "FIX",
-        "CAG",
-        "COP",
-        "ED",
-        "STZ",
-        "CEG",
-        "COO",
-        "CPRT",
-        "GLW",
-        "CPAY",
-        "CTVA",
-        "CSGP",
-        "COST",
-        "CTRA",
-        "CRH",
-        "CRWD",
-        "CCI",
-        "CSX",
-        "CMI",
-        "CVS",
-        "DHR",
-        "DRI",
-        "DDOG",
-        "DVA",
-        "DECK",
-        "DE",
-        "DELL",
-        "DAL",
-        "DVN",
-        "DXCM",
-        "FANG",
-        "DLR",
-        "DG",
-        "DLTR",
-        "D",
-        "DPZ",
-        "DASH",
-        "DOV",
-        "DOW",
-        "DHI",
-        "DTE",
-        "DUK",
-        "DD",
-        "ETN",
-        "EBAY",
-        "ECL",
-        "EIX",
-        "EW",
-        "EA",
-        "ELV",
-        "EME",
-        "EMR",
-        "ETR",
-        "EOG",
-        "EPAM",
-        "EQT",
-        "EFX",
-        "EQIX",
-        "EQR",
-        "ERIE",
-        "ESS",
-        "EL",
-        "EG",
-        "EVRG",
-        "ES",
-        "EXC",
-        "EXE",
-        "EXPE",
-        "EXPD",
-        "EXR",
-        "XOM",
-        "FFIV",
-        "FDS",
-        "FICO",
-        "FAST",
-        "FRT",
-        "FDX",
-        "FIS",
-        "FITB",
-        "FSLR",
-        "FE",
-        "FISV",
-        "F",
-        "FTNT",
-        "FTV",
-        "FOXA",
-        "FOX",
-        "BEN",
-        "FCX",
-        "GRMN",
-        "IT",
-        "GE",
-        "GEHC",
-        "GEV",
-        "GEN",
-        "GNRC",
-        "GD",
-        "GIS",
-        "GM",
-        "GPC",
-        "GILD",
-        "GPN",
-        "GL",
-        "GDDY",
-        "GS",
-        "HAL",
-        "HIG",
-        "HAS",
-        "HCA",
-        "DOC",
-        "HSIC",
-        "HSY",
-        "HPE",
-        "HLT",
-        "HOLX",
-        "HD",
-        "HON",
-        "HRL",
-        "HST",
-        "HWM",
-        "HPQ",
-        "HUBB",
-        "HUM",
-        "HBAN",
-        "HII",
-        "IBM",
-        "IEX",
-        "IDXX",
-        "ITW",
-        "INCY",
-        "IR",
-        "PODD",
-        "INTC",
-        "IBKR",
-        "ICE",
-        "IFF",
-        "IP",
-        "INTU",
-        "ISRG",
-        "IVZ",
-        "INVH",
-        "IQV",
-        "IRM",
-        "JBHT",
-        "JBL",
-        "JKHY",
-        "J",
-        "JNJ",
-        "JCI",
-        "JPM",
-        "KVUE",
-        "KDP",
-        "KEY",
-        "KEYS",
-        "KMB",
-        "KIM",
-        "KMI",
-        "KKR",
-        "KLAC",
-        "KHC",
-        "KR",
-        "LHX",
-        "LH",
-        "LRCX",
-        "LW",
-        "LVS",
-        "LDOS",
-        "LEN",
-        "LII",
-        "LLY",
-        "LIN",
-        "LYV",
-        "LMT",
-        "L",
-        "LOW",
-        "LULU",
-        "LYB",
-        "MTB",
-        "MPC",
-        "MAR",
-        "MRSH",
-        "MLM",
-        "MAS",
-        "MA",
-        "MTCH",
-        "MKC",
-        "MCD",
-        "MCK",
-        "MDT",
-        "MRK",
-        "META",
-        "MET",
-        "MTD",
-        "MGM",
-        "MCHP",
-        "MU",
-        "MSFT",
-        "MAA",
-        "MRNA",
-        "MOH",
-        "TAP",
-        "MDLZ",
-        "MPWR",
-        "MNST",
-        "MCO",
-        "MS",
-        "MOS",
-        "MSI",
-        "MSCI",
-        "NDAQ",
-        "NTAP",
-        "NFLX",
-        "NEM",
-        "NWSA",
-        "NWS",
-        "NEE",
-        "NKE",
-        "NI",
-        "NDSN",
-        "NSC",
-        "NTRS",
-        "NOC",
-        "NCLH",
-        "NRG",
-        "NUE",
-        "NVDA",
-        "NVR",
-        "NXPI",
-        "ORLY",
-        "OXY",
-        "ODFL",
-        "OMC",
-        "ON",
-        "OKE",
-        "ORCL",
-        "OTIS",
-        "PCAR",
-        "PKG",
-        "PLTR",
-        "PANW",
-        "PSKY",
-        "PH",
-        "PAYX",
-        "PAYC",
-        "PYPL",
-        "PNR",
-        "PEP",
-        "PFE",
-        "PCG",
-        "PM",
-        "PSX",
-        "PNW",
-        "PNC",
-        "POOL",
-        "PPG",
-        "PPL",
-        "PFG",
-        "PG",
-        "PGR",
-        "PLD",
-        "PRU",
-        "PEG",
-        "PTC",
-        "PSA",
-        "PHM",
-        "PWR",
-        "QCOM",
-        "DGX",
-        "Q",
-        "RL",
-        "RJF",
-        "RTX",
-        "O",
-        "REG",
-        "REGN",
-        "RF",
-        "RSG",
-        "RMD",
-        "RVTY",
-        "HOOD",
-        "ROK",
-        "ROL",
-        "ROP",
-        "ROST",
-        "RCL",
-        "SPGI",
-        "CRM",
-        "SNDK",
-        "SBAC",
-        "SLB",
-        "STX",
-        "SRE",
-        "NOW",
-        "SHW",
-        "SPG",
-        "SWKS",
-        "SJM",
-        "SW",
-        "SNA",
-        "SOLV",
-        "SO",
-        "LUV",
-        "SWK",
-        "SBUX",
-        "STT",
-        "STLD",
-        "STE",
-        "SYK",
-        "SMCI",
-        "SYF",
-        "SNPS",
-        "SYY",
-        "TMUS",
-        "TROW",
-        "TTWO",
-        "TPR",
-        "TRGP",
-        "TGT",
-        "TEL",
-        "TDY",
-        "TER",
-        "TSLA",
-        "TXN",
-        "TPL",
-        "TXT",
-        "TMO",
-        "TJX",
-        "TKO",
-        "TTD",
-        "TSCO",
-        "TT",
-        "TDG",
-        "TRV",
-        "TRMB",
-        "TFC",
-        "TYL",
-        "TSN",
-        "USB",
-        "UBER",
-        "UDR",
-        "ULTA",
-        "UNP",
-        "UAL",
-        "UPS",
-        "URI",
-        "UNH",
-        "UHS",
-        "VLO",
-        "VTR",
-        "VLTO",
-        "VRSN",
-        "VRSK",
-        "VZ",
-        "VRTX",
-        "VTRS",
-        "VICI",
-        "V",
-        "VST",
-        "VMC",
-        "WRB",
-        "GWW",
-        "WAB",
-        "WMT",
-        "DIS",
-        "WBD",
-        "WM",
-        "WAT",
-        "WEC",
-        "WFC",
-        "WELL",
-        "WST",
-        "WDC",
-        "WY",
-        "WSM",
-        "WMB",
-        "WTW",
-        "WDAY",
-        "WYNN",
-        "XEL",
-        "XYL",
-        "YUM",
-        "ZBRA",
-        "ZBH",
-        "ZTS"
-    ]
-
-
-def fetch_candles(ticker, from_ts, to_ts):
-    url = "https://finnhub.io/api/v1/stock/candle"
-    params = {
-        "symbol": ticker,
-        "resolution": "D",
-        "from": from_ts,
-        "to": to_ts,
-        "token": FINNHUB_API_KEY,
-    }
-    resp = requests.get(url, params=params, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
-    if data.get("s") != "ok":
-        return None
-    return data
+    import urllib.request, io
+    req = urllib.request.Request(
+        'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies',
+        headers={'User-Agent': 'Mozilla/5.0'}
+    )
+    html = urllib.request.urlopen(req).read().decode('utf-8')
+    tables = pd.read_html(io.StringIO(html))
+    tickers = tables[0]['Symbol'].str.replace('.', '-', regex=False).tolist()
+    return tickers
 
 
 def main():
-    if not FINNHUB_API_KEY:
-        print("ERROR: FINNHUB_API_KEY environment variable not set.")
-        sys.exit(1)
-
-    print("Fetching S&P 500 tickers from Wikipedia...")
+    print("Fetching S&P 500 tickers...")
     tickers = get_sp500_tickers()
     print(f"Found {len(tickers)} tickers.")
 
-    # Load existing cache to allow resuming if interrupted
     os.makedirs("cache", exist_ok=True)
-    existing_cache = {}
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE) as f:
-            existing_cache = json.load(f)
-        print(f"Loaded existing cache with {len(existing_cache)} entries.")
 
-    to_ts = int(datetime.now().timestamp())
-    from_ts = int((datetime.now() - timedelta(days=380)).timestamp())  # ~15mo for safety
+    print("Downloading candle data via yfinance...")
+    raw = yf.download(
+        tickers,
+        period="14mo",
+        interval="1d",
+        group_by="ticker",
+        auto_adjust=True,
+        progress=True,
+        threads=True,
+    )
 
-    cache = dict(existing_cache)
-    fetched = 0
+    cache = {}
     skipped = 0
-    errors = 0
 
-    for i, ticker in enumerate(tickers):
-        # Skip if already cached today
-        if ticker in cache:
-            skipped += 1
-            continue
-
+    for ticker in tickers:
         try:
-            data = fetch_candles(ticker, from_ts, to_ts)
-            if data:
-                cache[ticker] = data
-                fetched += 1
+            if len(tickers) == 1:
+                df = raw
             else:
-                errors += 1
-                print(f"  No data for {ticker}")
+                df = raw[ticker]
+
+            df = df.dropna(subset=["Close"])
+
+            if len(df) < 210:
+                skipped += 1
+                continue
+
+            cache[ticker] = {
+                "c": df["Close"].tolist(),
+                "h": df["High"].tolist(),
+                "l": df["Low"].tolist(),
+                "v": df["Volume"].tolist(),
+                "s": "ok"
+            }
         except Exception as e:
-            errors += 1
-            print(f"  Error fetching {ticker}: {e}")
+            skipped += 1
 
-        # Save progress every 50 tickers
-        if fetched % 50 == 0 and fetched > 0:
-            with open(CACHE_FILE, "w") as f:
-                json.dump(cache, f)
-            print(f"  Progress saved: {fetched} fetched, {skipped} skipped, {errors} errors")
-
-        time.sleep(SLEEP_BETWEEN_CALLS)
-
-    # Final save
     with open(CACHE_FILE, "w") as f:
         json.dump(cache, f)
 
-    print(f"\nDone. {fetched} fetched, {skipped} skipped (cached), {errors} errors.")
-    print(f"Total cache size: {len(cache)} tickers.")
+    print(f"\nDone. {len(cache)} tickers cached, {skipped} skipped.")
 
 
 if __name__ == "__main__":

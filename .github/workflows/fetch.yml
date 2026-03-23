@@ -31,11 +31,10 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests pandas numpy lxml html5lib beautifulsoup4
+        run: pip install yfinance pandas numpy lxml html5lib beautifulsoup4
 
       - name: Fetch candle data
         env:
-          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
         run: python fetch.py
 
       # Save cache so the analyze workflow can access it
