@@ -156,7 +156,7 @@ def render_section(title, items, is_buy, subtitle):
 
 def render_email(results):
     date_str = datetime.utcnow().strftime("%A, %B %-d, %Y")
-    buy_items = results.get("buy", [])
+    buy_items = [x for x in results.get("buy", []) if x["grade"] != "F"]
     sell_items = results.get("sell", [])
     total = results.get("total_analyzed", 0)
 
@@ -168,13 +168,13 @@ def render_email(results):
         "Buy Watch",
         buy_items,
         is_buy=True,
-        subtitle="Golden cross (MA50 > MA200) in last 30 days · Uptrend confirmed"
+        subtitle="Golden cross (MA50 > MA200) in last 14 days · Uptrend confirmed"
     )
     sell_section = render_section(
         "Sell Watch",
         sell_items,
         is_buy=False,
-        subtitle="Death cross (MA50 < MA200) in last 30 days · Downtrend confirmed"
+        subtitle="Death cross (MA50 < MA200) in last 14 days · Downtrend confirmed"
     )
 
     return f'''<!DOCTYPE html>
