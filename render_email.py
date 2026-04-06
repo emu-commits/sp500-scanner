@@ -183,6 +183,17 @@ def render_email(results):
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>S&P 500 Signal Report</title>
+<meta name="color-scheme" content="dark">
+<meta name="supported-color-schemes" content="dark">
+<style>
+:root {{ color-scheme: dark; }}
+body, .email-wrapper {{ background-color: #0a0a0a !important; }}
+@media (prefers-color-scheme: light) {{
+  body {{ background-color: #0a0a0a !important; }}
+  .email-wrapper {{ background-color: #0a0a0a !important; }}
+  .email-card {{ background-color: #111111 !important; }}
+}}
+</style>
 </head>
 <body style="margin:0;padding:0;background:#0a0a0a;font-family:-apple-system,BlinkMacSystemFont,
   'Segoe UI',sans-serif;">
@@ -193,12 +204,12 @@ def render_email(results):
 </div>
 
 <!-- Outer wrapper -->
-<table width="100%" cellpadding="0" cellspacing="0" style="background:#0a0a0a;">
+<table width="100%" cellpadding="0" cellspacing="0" class="email-wrapper" style="background:#0a0a0a;">
   <tr>
     <td align="center" style="padding:16px 0 32px;">
 
       <!-- Email card -->
-      <table width="100%" style="max-width:520px;background:#111111;
+      <table width="100%" class="email-card" style="max-width:520px;background:#111111;
         border-radius:16px;overflow:hidden;border:1px solid #1e1e1e;" 
         cellpadding="0" cellspacing="0">
 
