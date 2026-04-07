@@ -186,8 +186,19 @@ def render_email(results):
 <meta name="color-scheme" content="dark">
 <meta name="supported-color-schemes" content="dark">
 <style>
-:root {{ color-scheme: dark; }}
-body, .email-wrapper {{ background-color: #0a0a0a !important; }}
+/* Declare dark-only — prevents Apple Mail from inverting colors */
+:root {{ color-scheme: dark; -webkit-color-scheme: dark; }}
+body {{ background-color: #0a0a0a !important; color: #ffffff !important; }}
+/* Explicit dark mode rules so Apple Mail doesn't "convert" the email */
+@media (prefers-color-scheme: dark) {{
+  body {{ background-color: #0a0a0a !important; }}
+  .email-wrapper {{ background-color: #0a0a0a !important; }}
+  .email-card {{ background-color: #111111 !important; }}
+  .email-header {{ background: linear-gradient(135deg,#0d1f17 0%,#111 60%,#1f0d12 100%) !important; }}
+  .grade-legend {{ background-color: #0d0d0d !important; }}
+  .email-footer {{ background-color: #0d0d0d !important; }}
+}}
+/* Prevent light mode from showing white */
 @media (prefers-color-scheme: light) {{
   body {{ background-color: #0a0a0a !important; }}
   .email-wrapper {{ background-color: #0a0a0a !important; }}
@@ -215,7 +226,7 @@ body, .email-wrapper {{ background-color: #0a0a0a !important; }}
 
         <!-- Header -->
         <tr>
-          <td style="background:linear-gradient(135deg,#0d1f17 0%,#111 60%,#1f0d12 100%);
+          <td class="email-header" style="background:linear-gradient(135deg,#0d1f17 0%,#111 60%,#1f0d12 100%);
             padding:24px 20px 20px;border-bottom:1px solid #1e1e1e;">
             <table width="100%" cellpadding="0" cellspacing="0">
               <tr>
@@ -244,7 +255,7 @@ body, .email-wrapper {{ background-color: #0a0a0a !important; }}
 
         <!-- Grade legend -->
         <tr>
-          <td style="padding:12px 16px;background:#0d0d0d;border-bottom:1px solid #1a1a1a;">
+          <td class="grade-legend" style="padding:12px 16px;background:#0d0d0d;border-bottom:1px solid #1a1a1a;">
             <table width="100%" cellpadding="0" cellspacing="0">
               <tr>
                 <td style="font-size:10px;color:#444;letter-spacing:1px;
@@ -286,7 +297,7 @@ body, .email-wrapper {{ background-color: #0a0a0a !important; }}
 
         <!-- Footer -->
         <tr>
-          <td style="padding:20px 16px;border-top:1px solid #1a1a1a;
+          <td class="email-footer" style="padding:20px 16px;border-top:1px solid #1a1a1a;
             background:#0d0d0d;text-align:center;">
             <div style="font-size:10px;color:#333;line-height:1.6;">
               This report is for informational purposes only and does not constitute 
