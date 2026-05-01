@@ -168,13 +168,13 @@ def render_email(results):
         "Buy Watch",
         buy_items,
         is_buy=True,
-        subtitle="Golden cross (MA50 > MA200) in last 14 days · Uptrend confirmed"
+        subtitle="Golden cross (MA50 > MA200) in last 7 days · Uptrend confirmed"
     )
     sell_section = render_section(
         "Sell Watch",
         sell_items,
         is_buy=False,
-        subtitle="Death cross (MA50 < MA200) in last 14 days · Downtrend confirmed"
+        subtitle="Death cross (MA50 < MA200) in last 7 days · Downtrend confirmed"
     )
 
     return f'''<!DOCTYPE html>

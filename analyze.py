@@ -11,7 +11,7 @@ import numpy as np
 
 CACHE_FILE = "cache/candles.json"
 RESULTS_FILE = "cache/results.json"
-LOOKBACK_DAYS = 14  # ~2 trading weeks
+LOOKBACK_DAYS = 7  # ~1 trading week
 
 
 def load_cache():
