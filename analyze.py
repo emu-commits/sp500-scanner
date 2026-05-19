@@ -1,17 +1,20 @@
 """
-S&P 500 Cross Scanner — analyze.py
-Reads cached candle data from cache/candles.json and produces results.json
+S&P 500 Breakout Scanner — analyze.py
+Reads cached candle data from cache/candles.json and produces results.json.
+Identifies 52-week high breakouts and low breakdowns with volume/RS confirmation.
 """
 import json
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 import pandas as pd
 import numpy as np
 
 CACHE_FILE = "cache/candles.json"
 RESULTS_FILE = "cache/results.json"
-LOOKBACK_DAYS = 7  # ~1 trading week
+LOOKBACK_DAYS = 7       # trading days to scan for a breakout/breakdown event
+BREAKOUT_ZONE = 0.98    # within 2% of 52W high = breakout territory
+BREAKDOWN_ZONE = 1.02   # within 2% of 52W low = breakdown territory
 
 
 def load_cache():
@@ -61,64 +64,39 @@ def compute_obv(closes, volumes):
     v = pd.Series(volumes)
     direction = c.diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
     obv = (direction * v).cumsum()
-    # OBV slope: positive = accumulating
-    obv_slope = obv.iloc[-1] - obv.iloc[-10] if len(obv) >= 10 else 0
-    return obv_slope
+    return obv.iloc[-1] - obv.iloc[-10] if len(obv) >= 10 else 0
 
 
-def compute_bb_position(closes, period=20):
-    s = pd.Series(closes)
-    mid = s.rolling(period).mean()
-    std = s.rolling(period).std()
-    upper = mid + 2 * std
-    lower = mid - 2 * std
-    last_close = s.iloc[-1]
-    last_lower = lower.iloc[-1]
-    last_upper = upper.iloc[-1]
-    band_width = last_upper - last_lower
-    if band_width == 0:
-        return 0.5
-    return (last_close - last_lower) / band_width  # 0=at lower, 1=at upper
-
-
-def compute_52w_proximity(closes, highs):
-    """How close is current price to 52-week high? 1.0 = at high, 0.0 = far below."""
-    window = min(252, len(closes))
-    high_52w = max(highs[-window:])
-    if high_52w == 0:
-        return 0
-    return closes[-1] / high_52w
-
-
-def compute_volume_trend(volumes):
-    """Ratio of 10-day avg volume to 50-day avg volume. >1 = rising volume."""
-    v = pd.Series(volumes)
-    if len(v) < 50:
-        return 1.0
-    avg10 = v.iloc[-10:].mean()
-    avg50 = v.iloc[-50:].mean()
-    if avg50 == 0:
-        return 1.0
-    return float(avg10 / avg50)
-
-
-def find_cross_event(ma_fast, ma_slow, lookback):
+def find_breakout_event(closes, highs, lows, lookback):
     """
-    Returns (cross_found, days_ago) for most recent cross in lookback window.
-    For golden: fast crosses above slow. For death: fast crosses below slow.
+    Scan the last `lookback` bars for the most recent 52-week breakout or breakdown.
+    Breakout: close enters >= 98% of the prior 252-bar high (crossed from below).
+    Breakdown: close enters <= 102% of the prior 252-bar low (crossed from above).
+    Returns (event_type, days_ago) or (None, None).
     """
-    n = len(ma_fast)
+    n = len(closes)
     for i in range(1, lookback + 1):
         idx = n - i
-        if idx < 1:
+        if idx < 252:
             break
-        prev_diff = ma_fast.iloc[idx - 1] - ma_slow.iloc[idx - 1]
-        curr_diff = ma_fast.iloc[idx] - ma_slow.iloc[idx]
-        if prev_diff < 0 and curr_diff >= 0:
-            return "golden", i
-        if prev_diff > 0 and curr_diff <= 0:
-            return "death", i
+        high_52w = max(highs[idx - 252:idx])
+        low_52w = min(lows[idx - 252:idx])
+        prev_close = closes[idx - 1]
+        curr_close = closes[idx]
+        if prev_close < high_52w * BREAKOUT_ZONE and curr_close >= high_52w * BREAKOUT_ZONE:
+            return "breakout", i
+        if prev_close > low_52w * BREAKDOWN_ZONE and curr_close <= low_52w * BREAKDOWN_ZONE:
+            return "breakdown", i
     return None, None
+
+
+def compute_rs(closes, spx_closes, period=126):
+    """6-month return relative to S&P 500. Positive = outperforming."""
+    if len(closes) < period or len(spx_closes) < period:
+        return 0.0
+    stock_ret = (closes[-1] - closes[-period]) / closes[-period]
+    spx_ret = (spx_closes[-1] - spx_closes[-period]) / spx_closes[-period]
+    return float(stock_ret - spx_ret)
 
 
 def grade_score(score, max_score):
@@ -135,34 +113,18 @@ def grade_score(score, max_score):
         return "F"
 
 
-def analyze_ticker(ticker, data):
+def analyze_ticker(ticker, data, spx_closes):
     closes = data.get("c", [])
     highs = data.get("h", [])
     lows = data.get("l", [])
     volumes = data.get("v", [])
 
-    if len(closes) < 210:
+    if len(closes) < 252:
         return None
 
-    c = pd.Series(closes)
-    ma50 = c.rolling(50).mean()
-    ma200 = c.rolling(200).mean()
-
-    cross_type, days_ago = find_cross_event(ma50, ma200, LOOKBACK_DAYS)
-    if cross_type is None:
+    event_type, days_ago = find_breakout_event(closes, highs, lows, LOOKBACK_DAYS)
+    if event_type is None:
         return None
-
-    # Current trend confirmation
-    is_golden_trend = ma50.iloc[-1] > ma200.iloc[-1]
-    is_death_trend = ma50.iloc[-1] < ma200.iloc[-1]
-
-    if cross_type == "golden" and not is_golden_trend:
-        return None  # cross happened but reversed
-    if cross_type == "death" and not is_death_trend:
-        return None
-
-    # --- Scoring (for golden cross; inverted for death) ---
-    score = 0
 
     try:
         rsi = compute_rsi(closes)
@@ -185,61 +147,53 @@ def analyze_ticker(ticker, data):
         obv_slope = 0
 
     try:
-        bb_pos = compute_bb_position(closes)
+        rs = compute_rs(closes, spx_closes)
     except:
-        bb_pos = 0.5
+        rs = 0.0
 
+    # Volume on the actual breakout/breakdown day vs prior 50-day average
+    n = len(closes)
+    breakout_idx = n - days_ago
     try:
-        proximity_52w = compute_52w_proximity(closes, highs)
+        vol_on_day = volumes[breakout_idx]
+        prior_vols = volumes[max(0, breakout_idx - 50):breakout_idx]
+        avg_vol = float(np.mean(prior_vols)) if prior_vols else 1.0
+        vol_ratio = float(vol_on_day / avg_vol) if avg_vol > 0 else 1.0
     except:
-        proximity_52w = 0.5
+        vol_ratio = 1.0
 
-    try:
-        vol_trend = compute_volume_trend(volumes)
-    except:
-        vol_trend = 1.0
+    high_52w = max(highs[-252:])
+    low_52w = min(lows[-252:])
+    proximity_high = closes[-1] / high_52w if high_52w > 0 else 0.0
 
     max_score = 7
+    score = 0
 
-    if cross_type == "golden":
-        # RSI: healthy uptrend = 50-72 (not overbought)
-        score += 1 if 45 <= rsi <= 72 else (0.5 if rsi > 72 else 0)
-        # MACD: histogram positive and MACD above signal
+    if event_type == "breakout":
+        score += 1 if vol_ratio >= 1.5 else (0.5 if vol_ratio >= 1.2 else 0)
+        score += 1 if rs > 0.05 else (0.5 if rs > 0 else 0)
+        score += 1 if 50 <= rsi <= 80 else (0.5 if rsi > 80 else 0)
         score += 1 if macd_hist > 0 and macd_val > macd_sig else (0.5 if macd_hist > 0 else 0)
-        # ADX: strong trend
         score += 1 if adx >= 25 else (0.5 if adx >= 20 else 0)
-        # OBV: accumulation
+        score += 1 if proximity_high >= 0.99 else (0.5 if proximity_high >= 0.97 else 0)
         score += 1 if obv_slope > 0 else 0
-        # BB: price in upper half but not extreme
-        score += 1 if 0.5 <= bb_pos <= 0.9 else (0.5 if bb_pos > 0.9 else 0)
-        # 52-week high proximity: within 15% of high = breakout territory
-        score += 1 if proximity_52w >= 0.90 else (0.5 if proximity_52w >= 0.85 else 0)
-        # Volume trend: recent volume expanding (conviction behind the move)
-        score += 1 if vol_trend >= 1.2 else (0.5 if vol_trend >= 1.0 else 0)
-    else:  # death cross
-        # RSI: weak
-        score += 1 if rsi < 45 else (0.5 if rsi < 50 else 0)
-        # MACD: histogram negative
+    else:  # breakdown
+        low_proximity = closes[-1] / low_52w if low_52w > 0 else 2.0
+        score += 1 if vol_ratio >= 1.5 else (0.5 if vol_ratio >= 1.2 else 0)
+        score += 1 if rs < -0.05 else (0.5 if rs < 0 else 0)
+        score += 1 if rsi < 40 else (0.5 if rsi < 50 else 0)
         score += 1 if macd_hist < 0 and macd_val < macd_sig else (0.5 if macd_hist < 0 else 0)
-        # ADX: strong downtrend
         score += 1 if adx >= 25 else (0.5 if adx >= 20 else 0)
-        # OBV: distribution
+        score += 1 if low_proximity <= 1.01 else (0.5 if low_proximity <= 1.03 else 0)
         score += 1 if obv_slope < 0 else 0
-        # BB: price in lower half
-        score += 1 if bb_pos <= 0.4 else (0.5 if bb_pos < 0.5 else 0)
-        # 52-week high proximity: far from high = sustained weakness
-        score += 1 if proximity_52w <= 0.75 else (0.5 if proximity_52w <= 0.85 else 0)
-        # Volume trend: expanding volume on decline = distribution
-        score += 1 if vol_trend >= 1.2 else (0.5 if vol_trend >= 1.0 else 0)
 
     grade = grade_score(score, max_score)
-
     price = closes[-1]
     price_change_pct = ((closes[-1] - closes[-6]) / closes[-6] * 100) if len(closes) >= 6 else 0
 
     return {
         "ticker": ticker,
-        "cross_type": cross_type,
+        "event_type": event_type,
         "days_ago": int(days_ago),
         "grade": grade,
         "score": round(float(score), 1),
@@ -247,9 +201,9 @@ def analyze_ticker(ticker, data):
         "adx": round(float(adx), 1),
         "macd_positive": bool(macd_hist > 0),
         "obv_accumulating": bool(obv_slope > 0),
-        "bb_position": round(float(bb_pos), 2),
-        "proximity_52w": round(float(proximity_52w), 2),
-        "vol_trend": round(float(vol_trend), 2),
+        "rs_vs_spx": round(rs * 100, 1),
+        "proximity_52w": round(float(proximity_high), 2),
+        "vol_ratio": round(float(vol_ratio), 2),
         "price": round(float(price), 2),
         "price_change_5d_pct": round(float(price_change_pct), 1),
     }
@@ -259,27 +213,32 @@ def main():
     print("Loading candle cache...")
     cache = load_cache()
 
+    spx_closes = cache.get("_SPX", {}).get("c", [])
+    if not spx_closes:
+        print("Warning: no SPX data in cache — RS scores will be 0. Re-run fetch.py.")
+
     buy_signals = []
     sell_signals = []
-    errors = 0
 
     for ticker, data in cache.items():
-        result = analyze_ticker(ticker, data)
+        if ticker.startswith("_"):
+            continue
+        result = analyze_ticker(ticker, data, spx_closes)
         if result is None:
             continue
-        if result["cross_type"] == "golden":
+        if result["event_type"] == "breakout":
             buy_signals.append(result)
         else:
             sell_signals.append(result)
 
-    # Sort: best grades first, then most recent cross
     grade_order = {"A": 0, "B": 1, "C": 2, "D": 3, "F": 4}
     buy_signals.sort(key=lambda x: (grade_order[x["grade"]], x["days_ago"]))
     sell_signals.sort(key=lambda x: (grade_order[x["grade"]], x["days_ago"]))
 
+    ticker_count = sum(1 for k in cache if not k.startswith("_"))
     results = {
         "generated_at": datetime.utcnow().isoformat(),
-        "total_analyzed": len(cache),
+        "total_analyzed": ticker_count,
         "buy": buy_signals,
         "sell": sell_signals,
     }
@@ -288,7 +247,7 @@ def main():
     with open(RESULTS_FILE, "w") as f:
         json.dump(results, f, indent=2)
 
-    print(f"Done. {len(buy_signals)} buy signals, {len(sell_signals)} sell signals.")
+    print(f"Done. {len(buy_signals)} breakout signals, {len(sell_signals)} breakdown signals.")
     print(f"Results saved to {RESULTS_FILE}")
 
 

@@ -43,28 +43,33 @@ def signal_row(item, is_buy):
     change = item["price_change_5d_pct"]
     rsi = item["rsi"]
     adx = item["adx"]
-    cross_label = "Golden Cross" if is_buy else "Death Cross"
-    cross_color = "#00c48c" if is_buy else "#ff4d6d"
+    event_label = "52W Breakout" if is_buy else "52W Breakdown"
+    event_color = "#00c48c" if is_buy else "#ff4d6d"
     change_color = "#00c48c" if change >= 0 else "#ff4d6d"
     change_sign = "+" if change >= 0 else ""
 
     # Indicator pills
     indicators = []
+    vol = item.get("vol_ratio", 1.0)
+    if vol >= 1.2:
+        indicators.append((f"Vol ↑{vol:.1f}x", "#06b6d422", "#06b6d4"))
+    rs = item.get("rs_vs_spx", 0)
+    if is_buy and rs > 0:
+        indicators.append((f"RS +{rs:.1f}%", "#00c48c22", "#00c48c"))
+    elif not is_buy and rs < 0:
+        indicators.append((f"RS {rs:.1f}%", "#ff4d6d22", "#ff4d6d"))
     if item.get("macd_positive") if is_buy else not item.get("macd_positive", True):
         indicators.append(("MACD ✓", "#00c48c22", "#00c48c") if is_buy else ("MACD ✓", "#ff4d6d22", "#ff4d6d"))
     if item.get("obv_accumulating") if is_buy else not item.get("obv_accumulating", True):
         indicators.append(("OBV ↑", "#4da6ff22", "#4da6ff") if is_buy else ("OBV ↓", "#ff8c4222", "#ff8c42"))
-    rsi_ok = 45 <= rsi <= 72 if is_buy else rsi < 45
+    rsi_ok = 50 <= rsi <= 80 if is_buy else rsi < 45
     if rsi_ok:
         indicators.append((f"RSI {rsi}", "#f5c84222", "#f5c842"))
     proximity = item.get("proximity_52w", 0)
-    if is_buy and proximity >= 0.85:
+    if is_buy and proximity >= 0.97:
         indicators.append((f"52W {int(proximity*100)}%", "#a855f722", "#a855f7"))
-    elif not is_buy and proximity <= 0.85:
-        indicators.append((f"52W {int(proximity*100)}%", "#a855f722", "#a855f7"))
-    vol = item.get("vol_trend", 1.0)
-    if vol >= 1.2:
-        indicators.append((f"Vol ↑{vol:.1f}x", "#06b6d422", "#06b6d4"))
+    elif not is_buy and proximity <= 0.15:
+        indicators.append(("52W Lo", "#a855f722", "#a855f7"))
 
     pills = "".join([
         f'<span style="display:inline-block;background:{bg};color:{fg};'
@@ -74,7 +79,6 @@ def signal_row(item, is_buy):
     ])
 
     bg_color = "#0d1f17" if is_buy else "#1f0d12"
-    border_color = "#00c48c33" if is_buy else "#ff4d6d33"
 
     return f'''
     <tr>
@@ -82,7 +86,7 @@ def signal_row(item, is_buy):
         <table width="100%" cellpadding="0" cellspacing="0">
           <tr>
             <td style="vertical-align:top;">
-              <div style="background:{bg_color};border-left:3px solid {cross_color};
+              <div style="background:{bg_color};border-left:3px solid {event_color};
                 border-radius:0 8px 8px 0;padding:10px 12px;">
                 <table width="100%" cellpadding="0" cellspacing="0">
                   <tr>
@@ -90,8 +94,8 @@ def signal_row(item, is_buy):
                       <span style="font-family:'Courier New',monospace;font-weight:800;
                         font-size:17px;color:#ffffff;letter-spacing:1px;">{ticker}</span>
                       &nbsp;
-                      <span style="font-size:11px;color:{cross_color};font-weight:600;
-                        letter-spacing:0.5px;text-transform:uppercase;">{cross_label}</span>
+                      <span style="font-size:11px;color:{event_color};font-weight:600;
+                        letter-spacing:0.5px;text-transform:uppercase;">{event_label}</span>
                       <span style="font-size:10px;color:#666;margin-left:6px;">{days_ago}d ago</span>
                     </td>
                     <td align="right">
@@ -165,16 +169,16 @@ def render_email(results):
         grade_summary[item["grade"]] = grade_summary.get(item["grade"], 0) + 1
 
     buy_section = render_section(
-        "Buy Watch",
+        "Breakout Watch",
         buy_items,
         is_buy=True,
-        subtitle="Golden cross (MA50 > MA200) in last 7 days · Uptrend confirmed"
+        subtitle="52-week high breakout with volume confirmation · last 7 days"
     )
     sell_section = render_section(
-        "Sell Watch",
+        "Breakdown Watch",
         sell_items,
         is_buy=False,
-        subtitle="Death cross (MA50 < MA200) in last 7 days · Downtrend confirmed"
+        subtitle="52-week low breakdown with volume confirmation · last 7 days"
     )
 
     return f'''<!DOCTYPE html>
@@ -186,8 +190,10 @@ def render_email(results):
 <meta name="color-scheme" content="dark">
 <meta name="supported-color-schemes" content="dark">
 <style>
+/* Declare dark-only — prevents Apple Mail from inverting colors */
 :root {{ color-scheme: dark; -webkit-color-scheme: dark; }}
 body {{ background-color: #0a0a0a !important; color: #ffffff !important; }}
+/* Explicit dark mode rules so Apple Mail doesn't "convert" the email */
 @media (prefers-color-scheme: dark) {{
   body {{ background-color: #0a0a0a !important; }}
   .email-wrapper {{ background-color: #0a0a0a !important; }}
@@ -196,6 +202,7 @@ body {{ background-color: #0a0a0a !important; color: #ffffff !important; }}
   .grade-legend {{ background-color: #0d0d0d !important; }}
   .email-footer {{ background-color: #0d0d0d !important; }}
 }}
+/* Prevent light mode from showing white */
 @media (prefers-color-scheme: light) {{
   body {{ background-color: #0a0a0a !important; }}
   .email-wrapper {{ background-color: #0a0a0a !important; }}
@@ -208,7 +215,7 @@ body {{ background-color: #0a0a0a !important; color: #ffffff !important; }}
 
 <!-- Preheader -->
 <div style="display:none;max-height:0;overflow:hidden;color:#0a0a0a;">
-  {len(buy_items)} buy signals · {len(sell_items)} sell signals · S&P 500 daily scan
+  {len(buy_items)} breakout signals · {len(sell_items)} breakdown signals · S&P 500 daily scan
 </div>
 
 <!-- Outer wrapper -->
@@ -218,7 +225,7 @@ body {{ background-color: #0a0a0a !important; color: #ffffff !important; }}
 
       <!-- Email card -->
       <table width="100%" class="email-card" style="max-width:520px;background:#111111;
-        border-radius:16px;overflow:hidden;border:1px solid #1e1e1e;"
+        border-radius:16px;overflow:hidden;border:1px solid #1e1e1e;" 
         cellpadding="0" cellspacing="0">
 
         <!-- Header -->
@@ -232,7 +239,7 @@ body {{ background-color: #0a0a0a !important; color: #ffffff !important; }}
                     text-transform:uppercase;margin-bottom:4px;">Daily Signal Report</div>
                   <div style="font-family:Georgia,serif;font-size:22px;
                     color:#ffffff;font-weight:bold;line-height:1.2;">
-                    S&amp;P 500 Cross Scanner
+                    S&amp;P 500 Breakout Scanner
                   </div>
                   <div style="font-size:12px;color:#555;margin-top:4px;">{date_str}</div>
                 </td>
@@ -270,7 +277,7 @@ body {{ background-color: #0a0a0a !important; color: #ffffff !important; }}
                   </div>
                 </td>""" for g in ["A","B","C","D","F"]])}
                 <td style="font-size:10px;color:#333;text-align:right;">
-                  RSI · MACD · ADX<br>OBV · BB · 52W · Vol
+                  Vol · RS · MACD · OBV<br>RSI · ADX · 52W
                 </td>
               </tr>
             </table>
@@ -300,7 +307,7 @@ body {{ background-color: #0a0a0a !important; color: #ffffff !important; }}
               This report is for informational purposes only and does not constitute 
               financial advice. Past signals do not guarantee future performance.<br>
               <span style="color:#1e1e1e;">·</span><br>
-              Generated by S&amp;P 500 Cross Scanner · Running on GitHub Actions
+              Generated by S&amp;P 500 Breakout Scanner · Running on GitHub Actions
             </div>
           </td>
         </tr>

@@ -69,6 +69,19 @@ def main():
         except Exception as e:
             skipped += 1
 
+    print("Fetching ^GSPC for relative strength...")
+    try:
+        spx = yf.download("^GSPC", period="14mo", interval="1d",
+                          auto_adjust=True, progress=False, threads=False)
+        spx = spx.dropna(subset=["Close"])
+        if len(spx) >= 210:
+            cache["_SPX"] = {"c": [float(x) for x in spx["Close"].tolist()]}
+            print(f"SPX: {len(spx)} bars cached.")
+        else:
+            print("Warning: insufficient SPX data.")
+    except Exception as e:
+        print(f"Warning: could not fetch ^GSPC: {e}")
+
     with open(CACHE_FILE, "w") as f:
         json.dump(cache, f)
 
