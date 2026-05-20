@@ -14,6 +14,14 @@ from datetime import datetime, timedelta
 CACHE_FILE = "cache/candles.json"
 
 
+def _flatten(df):
+    """yfinance 0.2.x returns MultiIndex columns for single-ticker downloads.
+    Flatten to simple column names so df['Close'] works consistently."""
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df
+
+
 def get_sp500_tickers():
     import urllib.request, io
     req = urllib.request.Request(
@@ -74,7 +82,7 @@ def main():
     try:
         spx = yf.download("^GSPC", period="14mo", interval="1d",
                           auto_adjust=True, progress=False)
-        spx = spx.dropna(subset=["Close"])
+        spx = _flatten(spx).dropna(subset=["Close"])
         if len(spx) >= 210:
             cache["_SPX"] = {"c": [float(x) for x in spx["Close"].tolist()]}
             print(f"SPX: {len(spx)} bars cached.")
@@ -89,7 +97,7 @@ def main():
         try:
             df = yf.download(ticker, period="5d", interval="1d",
                              auto_adjust=True, progress=False)
-            df = df.dropna(subset=["Close"])
+            df = _flatten(df).dropna(subset=["Close"])
             if not df.empty:
                 cache[key] = {"c": [float(x) for x in df["Close"].tolist()]}
                 print(f"{key}: {df['Close'].iloc[-1]:.2f}")

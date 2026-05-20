@@ -20,7 +20,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install yfinance pandas numpy lxml html5lib beautifulsoup4
+        run: pip install "yfinance>=0.2.18,<0.3" pandas numpy lxml html5lib beautifulsoup4
 
       - name: Fetch candle data
         run: python fetch.py
