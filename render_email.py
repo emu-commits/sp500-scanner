@@ -160,7 +160,7 @@ def render_section(title, items, is_buy, subtitle):
 
 def render_email(results):
     date_str = datetime.utcnow().strftime("%A, %B %-d, %Y")
-    buy_items = [x for x in results.get("buy", []) if x["grade"] != "F"]
+    buy_items = [x for x in results.get("buy", []) if x["grade"] in ("A", "B", "C")]
     sell_items = results.get("sell", [])
     total = results.get("total_analyzed", 0)
 

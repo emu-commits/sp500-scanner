@@ -13,8 +13,8 @@ import numpy as np
 CACHE_FILE = "cache/candles.json"
 RESULTS_FILE = "cache/results.json"
 LOOKBACK_DAYS = 7       # trading days to scan for a breakout/breakdown event
-BREAKOUT_ZONE = 0.98    # within 2% of 52W high = breakout territory
-BREAKDOWN_ZONE = 1.02   # within 2% of 52W low = breakdown territory
+BREAKOUT_ZONE = 1.00    # close must be AT or ABOVE the 52W high to count
+BREAKDOWN_ZONE = 1.00   # close must be AT or BELOW the 52W low to count
 
 
 def load_cache():
@@ -161,6 +161,14 @@ def analyze_ticker(ticker, data, spx_closes):
         vol_ratio = float(vol_on_day / avg_vol) if avg_vol > 0 else 1.0
     except:
         vol_ratio = 1.0
+
+    # Hard gates — filter before scoring
+    if vol_ratio < 1.3:
+        return None
+    if event_type == "breakout" and rs <= 0:
+        return None
+    if event_type == "breakdown" and rs >= 0:
+        return None
 
     high_52w = max(highs[-252:])
     low_52w = min(lows[-252:])
