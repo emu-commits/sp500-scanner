@@ -6,6 +6,7 @@ Uses yfinance (Yahoo Finance) — no API key required.
 import json
 import os
 import sys
+import urllib.request
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
@@ -81,6 +82,46 @@ def main():
             print("Warning: insufficient SPX data.")
     except Exception as e:
         print(f"Warning: could not fetch ^GSPC: {e}")
+
+    # Fetch VIX and Treasury yields for market stress indicator
+    print("Fetching macro indicators (VIX, yields)...")
+    for ticker, key in [("^VIX", "_VIX"), ("^TNX", "_TNX"), ("^IRX", "_IRX")]:
+        try:
+            df = yf.download(ticker, period="5d", interval="1d",
+                             auto_adjust=True, progress=False, threads=False)
+            df = df.dropna(subset=["Close"])
+            if not df.empty:
+                cache[key] = {"c": [float(x) for x in df["Close"].tolist()]}
+                print(f"{key}: {df['Close'].iloc[-1]:.2f}")
+        except Exception as e:
+            print(f"Warning: could not fetch {ticker}: {e}")
+
+    # Fetch ICE BofA OAS spreads from FRED (free key required: fred.stlouisfed.org/docs/api/api_key.html)
+    fred_key = os.environ.get("FRED_API_KEY", "")
+    if fred_key:
+        print("Fetching credit spreads from FRED...")
+        fred_series = {
+            "_HY_OAS":  "BAMLH0A0HYM2",
+            "_IG_OAS":  "BAMLC0A0CM",
+            "_CCC_OAS": "BAMLH0A3HYM2",
+        }
+        for cache_key, series_id in fred_series.items():
+            try:
+                url = (
+                    "https://api.stlouisfed.org/fred/series/observations"
+                    f"?series_id={series_id}&api_key={fred_key}"
+                    "&file_type=json&limit=10&sort_order=desc"
+                )
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                data = json.loads(urllib.request.urlopen(req).read().decode())
+                obs = [o for o in data.get("observations", []) if o["value"] != "."]
+                if obs:
+                    cache[cache_key] = {"v": float(obs[0]["value"]), "d": obs[0]["date"]}
+                    print(f"{cache_key}: {obs[0]['value']} ({obs[0]['date']})")
+            except Exception as e:
+                print(f"Warning: FRED {series_id}: {e}")
+    else:
+        print("FRED_API_KEY not set — skipping OAS credit spread data.")
 
     with open(CACHE_FILE, "w") as f:
         json.dump(cache, f)

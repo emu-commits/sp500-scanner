@@ -35,6 +35,92 @@ def grade_badge(grade):
         <span style="color:#888;font-size:11px;margin-left:5px;">{label}</span>'''
 
 
+def _metric_cell(label, value_str, color):
+    return (
+        f'<td style="text-align:center;padding:4px 6px;">'
+        f'<div style="font-size:9px;color:#444;letter-spacing:0.8px;'
+        f'text-transform:uppercase;margin-bottom:2px;">{label}</div>'
+        f'<div style="font-size:12px;font-weight:700;color:{color};'
+        f'font-family:\'Courier New\',monospace;">{value_str}</div>'
+        f'</td>'
+    )
+
+
+def market_health_section(health):
+    if not health:
+        return ""
+
+    score   = health.get("stress_score")
+    verdict = health.get("verdict", "")
+    vix     = health.get("vix")
+    curve   = health.get("curve_10y3m")
+    hy_oas  = health.get("hy_oas")
+    ig_oas  = health.get("ig_oas")
+    ccc_oas = health.get("ccc_oas")
+    breadth = health.get("breadth_pct")
+
+    if score is None:
+        gauge_color, score_str, bar_pct = "#444", "N/A", 0
+    elif score < 20:
+        gauge_color, score_str, bar_pct = "#00c48c", f"{score}/100", score
+    elif score < 40:
+        gauge_color, score_str, bar_pct = "#4da6ff", f"{score}/100", score
+    elif score < 60:
+        gauge_color, score_str, bar_pct = "#f5c842", f"{score}/100", score
+    elif score < 80:
+        gauge_color, score_str, bar_pct = "#ff8c42", f"{score}/100", score
+    else:
+        gauge_color, score_str, bar_pct = "#ff4d6d", f"{score}/100", score
+
+    def vc(v, lo, mid): return "#00c48c" if v < lo else ("#ff8c42" if v < mid else "#ff4d6d")
+
+    vix_c    = vc(vix, 20, 25)         if vix     is not None else "#555"
+    hy_c     = vc(hy_oas, 3, 4)        if hy_oas  is not None else "#555"
+    ig_c     = vc(ig_oas, 1.0, 1.5)    if ig_oas  is not None else "#555"
+    ccc_c    = vc(ccc_oas, 8, 10)      if ccc_oas is not None else "#555"
+    curve_c  = ("#00c48c" if (curve is not None and curve > 0.25)
+                else ("#ff8c42" if (curve is not None and curve > 0) else "#ff4d6d")) if curve is not None else "#555"
+    breadth_c = vc(100 - breadth, 45, 60) if breadth is not None else "#555"
+
+    curve_str  = f"{'+' if curve > 0 else ''}{curve:.2f}pp" if curve is not None else "—"
+
+    cells = "".join([
+        _metric_cell("VIX",     f"{vix:.1f}"     if vix     is not None else "—", vix_c),
+        _metric_cell("HY OAS",  f"{hy_oas:.2f}%" if hy_oas  is not None else "—", hy_c),
+        _metric_cell("IG OAS",  f"{ig_oas:.2f}%" if ig_oas  is not None else "—", ig_c),
+        _metric_cell("CCC OAS", f"{ccc_oas:.2f}%" if ccc_oas is not None else "—", ccc_c),
+        _metric_cell("10Y–3M",  curve_str,                                          curve_c),
+        _metric_cell("BREADTH", f"{breadth:.0f}%" if breadth is not None else "—", breadth_c),
+    ])
+
+    return f'''
+    <tr>
+      <td style="padding:14px 16px 12px;background:#0a0a0a;border-bottom:1px solid #1e1e1e;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:8px;">
+          <tr>
+            <td>
+              <div style="font-size:9px;color:#444;letter-spacing:1.5px;
+                text-transform:uppercase;margin-bottom:6px;">Market Stress Indicator</div>
+              <div style="background:#1e1e1e;border-radius:3px;height:5px;overflow:hidden;">
+                <div style="width:{bar_pct}%;background:{gauge_color};height:5px;
+                  border-radius:3px;min-width:3px;"></div>
+              </div>
+            </td>
+            <td style="width:1px;white-space:nowrap;padding-left:12px;vertical-align:bottom;">
+              <span style="font-size:13px;font-weight:800;color:{gauge_color};
+                font-family:'Courier New',monospace;">{score_str}</span>
+            </td>
+          </tr>
+        </table>
+        <table width="100%" cellpadding="0" cellspacing="0">
+          <tr>{cells}</tr>
+        </table>
+        <div style="margin-top:8px;font-size:11px;color:{gauge_color};
+          font-style:italic;letter-spacing:0.2px;">{verdict}</div>
+      </td>
+    </tr>'''
+
+
 def signal_row(item, is_buy):
     ticker = item["ticker"]
     grade = item["grade"]
@@ -163,6 +249,7 @@ def render_email(results):
     buy_items = [x for x in results.get("buy", []) if x["grade"] in ("A", "B", "C")]
     sell_items = results.get("sell", [])
     total = results.get("total_analyzed", 0)
+    health_row = market_health_section(results.get("market_health"))
 
     grade_summary = {}
     for item in buy_items:
@@ -283,6 +370,9 @@ body {{ background-color: #0a0a0a !important; color: #ffffff !important; }}
             </table>
           </td>
         </tr>
+
+        <!-- Market stress indicator -->
+        {health_row}
 
         <!-- Buy signals -->
         <table width="100%" cellpadding="0" cellspacing="0">

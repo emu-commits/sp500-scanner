@@ -99,6 +99,75 @@ def compute_rs(closes, spx_closes, period=126):
     return float(stock_ret - spx_ret)
 
 
+def compute_market_health(cache, breadth_pct):
+    """
+    Produces a 0-100 stress score from VIX, yield curve, OAS spreads, and breadth.
+    Thresholds anchored to the tweet's crash-precursor levels.
+    """
+    vix_data = cache.get("_VIX", {}).get("c", [])
+    tnx_data = cache.get("_TNX", {}).get("c", [])
+    irx_data = cache.get("_IRX", {}).get("c", [])
+
+    vix   = vix_data[-1]  if vix_data  else None
+    curve = (tnx_data[-1] - irx_data[-1]) if (tnx_data and irx_data) else None
+    hy_oas  = cache.get("_HY_OAS",  {}).get("v")
+    ig_oas  = cache.get("_IG_OAS",  {}).get("v")
+    ccc_oas = cache.get("_CCC_OAS", {}).get("v")
+
+    score = 0
+    max_score = 0
+
+    if vix is not None:                          # 25 pts — crash threshold: VIX 30+
+        max_score += 25
+        score += 25 if vix >= 30 else (16 if vix >= 25 else (8 if vix >= 20 else 0))
+
+    if hy_oas is not None:                       # 25 pts — crash threshold: HY OAS 4%+
+        max_score += 25
+        score += 25 if hy_oas >= 5 else (16 if hy_oas >= 4 else (8 if hy_oas >= 3.5 else (4 if hy_oas >= 3 else 0)))
+
+    if ig_oas is not None:                       # 15 pts — crash threshold: IG OAS 1.5%+
+        max_score += 15
+        score += 15 if ig_oas >= 1.5 else (9 if ig_oas >= 1.2 else (4 if ig_oas >= 1.0 else 0))
+
+    if ccc_oas is not None:                      # 15 pts — crash threshold: CCC OAS 12%+
+        max_score += 15
+        score += 15 if ccc_oas >= 12 else (9 if ccc_oas >= 10 else (4 if ccc_oas >= 8 else 0))
+
+    if curve is not None:                        # 10 pts — inverted curve = stress
+        max_score += 10
+        score += 10 if curve <= -0.5 else (6 if curve <= 0 else (2 if curve <= 0.25 else 0))
+
+    if breadth_pct is not None:                  # 10 pts — <40% above 200MA = stressed market
+        max_score += 10
+        score += 10 if breadth_pct < 20 else (6 if breadth_pct < 40 else (2 if breadth_pct < 55 else 0))
+
+    stress_score = int(score / max_score * 100) if max_score > 0 else None
+
+    if stress_score is None:
+        verdict = "Insufficient data"
+    elif stress_score < 20:
+        verdict = "No systemic stress — credit and volatility calm"
+    elif stress_score < 40:
+        verdict = "Low stress — routine market noise"
+    elif stress_score < 60:
+        verdict = "Moderate stress — monitor credit spreads"
+    elif stress_score < 80:
+        verdict = "Elevated stress — risk-off conditions building"
+    else:
+        verdict = "High stress — crash precursors present"
+
+    return {
+        "stress_score": stress_score,
+        "verdict": verdict,
+        "vix":      round(vix, 1)      if vix      is not None else None,
+        "curve_10y3m": round(curve, 2) if curve    is not None else None,
+        "hy_oas":   hy_oas,
+        "ig_oas":   ig_oas,
+        "ccc_oas":  ccc_oas,
+        "breadth_pct": round(breadth_pct, 1) if breadth_pct is not None else None,
+    }
+
+
 def grade_score(score, max_score):
     pct = score / max_score if max_score > 0 else 0
     if pct >= 0.85:
@@ -243,10 +312,22 @@ def main():
     buy_signals.sort(key=lambda x: (grade_order[x["grade"]], x["days_ago"]))
     sell_signals.sort(key=lambda x: (grade_order[x["grade"]], x["days_ago"]))
 
+    # Market breadth: % of S&P 500 stocks currently above their 200-day MA
+    above_200 = sum(
+        1 for k, v in cache.items()
+        if not k.startswith("_") and len(v.get("c", [])) >= 200 and v["c"][-1] > sum(v["c"][-200:]) / 200
+    )
+    breadth_total = sum(1 for k, v in cache.items() if not k.startswith("_") and len(v.get("c", [])) >= 200)
+    breadth_pct = (above_200 / breadth_total * 100) if breadth_total > 0 else None
+
+    market_health = compute_market_health(cache, breadth_pct)
+    print(f"Market stress: {market_health['stress_score']}/100 — {market_health['verdict']}")
+
     ticker_count = sum(1 for k in cache if not k.startswith("_"))
     results = {
         "generated_at": datetime.utcnow().isoformat(),
         "total_analyzed": ticker_count,
+        "market_health": market_health,
         "buy": buy_signals,
         "sell": sell_signals,
     }

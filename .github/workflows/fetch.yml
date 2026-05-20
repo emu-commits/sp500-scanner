@@ -24,6 +24,8 @@ jobs:
 
       - name: Fetch candle data
         run: python fetch.py
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
 
       - name: Save candle cache
         uses: actions/cache@v4
