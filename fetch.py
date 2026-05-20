@@ -120,7 +120,7 @@ def main():
                 url = (
                     "https://api.stlouisfed.org/fred/series/observations"
                     f"?series_id={series_id}&api_key={fred_key}"
-                    "&file_type=json&limit=30&sort_order=desc"
+                    "&file_type=json&limit=90&sort_order=desc"
                 )
                 req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
                 data = json.loads(urllib.request.urlopen(req).read().decode())

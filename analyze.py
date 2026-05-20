@@ -117,29 +117,29 @@ def compute_market_health(cache, breadth_pct):
     score = 0
     max_score = 0
 
-    if vix is not None:                          # 25 pts — crash threshold: VIX 30+
+    if vix is not None:                          # 25 pts — starts scoring at 15 (calm floor)
         max_score += 25
-        score += 25 if vix >= 30 else (16 if vix >= 25 else (8 if vix >= 20 else 0))
+        score += 25 if vix >= 30 else (20 if vix >= 25 else (12 if vix >= 20 else (5 if vix >= 15 else 0)))
 
-    if hy_oas is not None:                       # 25 pts — crash threshold: HY OAS 4%+
+    if hy_oas is not None:                       # 25 pts — starts at 2.5% (historical avg floor)
         max_score += 25
-        score += 25 if hy_oas >= 5 else (16 if hy_oas >= 4 else (8 if hy_oas >= 3.5 else (4 if hy_oas >= 3 else 0)))
+        score += 25 if hy_oas >= 5.5 else (20 if hy_oas >= 4.5 else (12 if hy_oas >= 3.5 else (5 if hy_oas >= 2.5 else 0)))
 
-    if ig_oas is not None:                       # 15 pts — crash threshold: IG OAS 1.5%+
+    if ig_oas is not None:                       # 15 pts — starts at 0.6% (tight-spread floor)
         max_score += 15
-        score += 15 if ig_oas >= 1.5 else (9 if ig_oas >= 1.2 else (4 if ig_oas >= 1.0 else 0))
+        score += 15 if ig_oas >= 1.5 else (10 if ig_oas >= 1.2 else (6 if ig_oas >= 0.9 else (3 if ig_oas >= 0.6 else 0)))
 
-    if ccc_oas is not None:                      # 15 pts — crash threshold: CCC OAS 12%+
+    if ccc_oas is not None:                      # 15 pts — starts at 7% (below long-term avg ~8%)
         max_score += 15
-        score += 15 if ccc_oas >= 12 else (9 if ccc_oas >= 10 else (4 if ccc_oas >= 8 else 0))
+        score += 15 if ccc_oas >= 13 else (10 if ccc_oas >= 11 else (5 if ccc_oas >= 9 else (2 if ccc_oas >= 7 else 0)))
 
     if curve is not None:                        # 10 pts — inverted curve = stress
         max_score += 10
         score += 10 if curve <= -0.5 else (6 if curve <= 0 else (2 if curve <= 0.25 else 0))
 
-    if breadth_pct is not None:                  # 10 pts — <40% above 200MA = stressed market
+    if breadth_pct is not None:                  # 10 pts — starts at <60% (normal healthy breadth)
         max_score += 10
-        score += 10 if breadth_pct < 20 else (6 if breadth_pct < 40 else (2 if breadth_pct < 55 else 0))
+        score += 10 if breadth_pct < 20 else (6 if breadth_pct < 40 else (3 if breadth_pct < 50 else (1 if breadth_pct < 60 else 0)))
 
     stress_score = int(score / max_score * 100) if max_score > 0 else None
 
