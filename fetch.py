@@ -73,7 +73,7 @@ def main():
     print("Fetching ^GSPC for relative strength...")
     try:
         spx = yf.download("^GSPC", period="14mo", interval="1d",
-                          auto_adjust=True, progress=False, threads=False)
+                          auto_adjust=True, progress=False)
         spx = spx.dropna(subset=["Close"])
         if len(spx) >= 210:
             cache["_SPX"] = {"c": [float(x) for x in spx["Close"].tolist()]}
@@ -88,11 +88,13 @@ def main():
     for ticker, key in [("^VIX", "_VIX"), ("^TNX", "_TNX"), ("^IRX", "_IRX")]:
         try:
             df = yf.download(ticker, period="5d", interval="1d",
-                             auto_adjust=True, progress=False, threads=False)
+                             auto_adjust=True, progress=False)
             df = df.dropna(subset=["Close"])
             if not df.empty:
                 cache[key] = {"c": [float(x) for x in df["Close"].tolist()]}
                 print(f"{key}: {df['Close'].iloc[-1]:.2f}")
+            else:
+                print(f"Warning: {ticker} returned empty data.")
         except Exception as e:
             print(f"Warning: could not fetch {ticker}: {e}")
 
@@ -110,7 +112,7 @@ def main():
                 url = (
                     "https://api.stlouisfed.org/fred/series/observations"
                     f"?series_id={series_id}&api_key={fred_key}"
-                    "&file_type=json&limit=10&sort_order=desc"
+                    "&file_type=json&limit=30&sort_order=desc"
                 )
                 req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
                 data = json.loads(urllib.request.urlopen(req).read().decode())
@@ -118,6 +120,9 @@ def main():
                 if obs:
                     cache[cache_key] = {"v": float(obs[0]["value"]), "d": obs[0]["date"]}
                     print(f"{cache_key}: {obs[0]['value']} ({obs[0]['date']})")
+                else:
+                    all_obs = data.get("observations", [])
+                    print(f"Warning: {cache_key} ({series_id}): {len(all_obs)} obs returned, all missing values.")
             except Exception as e:
                 print(f"Warning: FRED {series_id}: {e}")
     else:
