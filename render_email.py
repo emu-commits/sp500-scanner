@@ -244,8 +244,39 @@ def render_section(title, items, is_buy, subtitle):
     {empty}'''
 
 
+def _stale_banner(results):
+    """Loud banner when the underlying market data hasn't advanced — makes a
+    frozen fetch pipeline obvious instead of silently shipping yesterday's data."""
+    if not results.get("data_stale"):
+        return ""
+    days_old = results.get("data_days_old")
+    age = f"{days_old} days old" if days_old is not None else "stale"
+    return f'''
+    <tr>
+      <td style="padding:12px 16px;background:#331a00;border-bottom:1px solid #ff8c4244;">
+        <div style="font-size:12px;color:#ff8c42;font-weight:700;">
+          ⚠ Market data is {age}
+        </div>
+        <div style="font-size:11px;color:#cc9966;margin-top:3px;">
+          The fetch pipeline may not have run. Signals and stress reflect
+          {results.get("data_date", "an older")} data, not today's market.
+        </div>
+      </td>
+    </tr>'''
+
+
 def render_email(results):
-    date_str = datetime.utcnow().strftime("%A, %B %-d, %Y")
+    # Show the actual market-data date, not the render time — otherwise a frozen
+    # pipeline still displays "today" and looks fresh.
+    data_date = results.get("data_date")
+    if data_date:
+        try:
+            date_str = datetime.strptime(data_date, "%Y-%m-%d").strftime("Market data · %A, %B %-d, %Y")
+        except Exception:
+            date_str = f"Market data · {data_date}"
+    else:
+        date_str = datetime.utcnow().strftime("%A, %B %-d, %Y")
+    stale_banner = _stale_banner(results)
     buy_items = [x for x in results.get("buy", []) if x["grade"] in ("A", "B", "C")]
     sell_items = results.get("sell", [])
     total = results.get("total_analyzed", 0)
@@ -343,6 +374,9 @@ body {{ background-color: #0a0a0a !important; color: #ffffff !important; }}
             </table>
           </td>
         </tr>
+
+        <!-- Stale-data warning (only when data hasn't advanced) -->
+        {stale_banner}
 
         <!-- Grade legend -->
         <tr>

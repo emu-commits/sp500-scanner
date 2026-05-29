@@ -55,6 +55,16 @@ def main():
     cache = {}
     skipped = 0
 
+    # Stamp the actual market-data date so downstream can detect staleness.
+    try:
+        candle_date = raw.index[-1].date().isoformat()
+    except Exception:
+        candle_date = None
+    cache["_meta"] = {
+        "fetched_at": datetime.utcnow().isoformat(),
+        "candle_date": candle_date,
+    }
+
     for ticker in tickers:
         try:
             if len(tickers) == 1:
@@ -85,7 +95,10 @@ def main():
         spx = _flatten(spx).dropna(subset=["Close"])
         if len(spx) >= 210:
             cache["_SPX"] = {"c": [float(x) for x in spx["Close"].tolist()]}
-            print(f"SPX: {len(spx)} bars cached.")
+            # SPX is the cleanest single-ticker download — use its last bar as
+            # the canonical market-data date.
+            cache["_meta"]["data_date"] = spx.index[-1].date().isoformat()
+            print(f"SPX: {len(spx)} bars cached. Latest bar: {cache['_meta']['data_date']}")
         else:
             print("Warning: insufficient SPX data.")
     except Exception as e:
@@ -99,8 +112,11 @@ def main():
                              auto_adjust=True, progress=False)
             df = _flatten(df).dropna(subset=["Close"])
             if not df.empty:
-                cache[key] = {"c": [float(x) for x in df["Close"].tolist()]}
-                print(f"{key}: {df['Close'].iloc[-1]:.2f}")
+                cache[key] = {
+                    "c": [float(x) for x in df["Close"].tolist()],
+                    "d": df.index[-1].date().isoformat(),
+                }
+                print(f"{key}: {df['Close'].iloc[-1]:.2f} ({cache[key]['d']})")
             else:
                 print(f"Warning: {ticker} returned empty data.")
         except Exception as e:

@@ -6,7 +6,7 @@ Identifies 52-week high breakouts and low breakdowns with volume/RS confirmation
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, date
 import pandas as pd
 import numpy as np
 
@@ -323,9 +323,31 @@ def main():
     market_health = compute_market_health(cache, breadth_pct)
     print(f"Market stress: {market_health['stress_score']}/100 — {market_health['verdict']}")
 
+    # Data-freshness check: surface the actual market-data date and flag staleness
+    # so a frozen fetch pipeline becomes visible instead of silently reusing cache.
+    meta = cache.get("_meta", {})
+    data_date = meta.get("data_date") or meta.get("candle_date")
+    fetched_at = meta.get("fetched_at")
+    days_old = None
+    data_stale = False
+    if data_date:
+        try:
+            d = date.fromisoformat(data_date)
+            days_old = (date.today() - d).days
+            # Markets close Fri; Mon data can be 3 days old over a weekend, so
+            # only flag as stale beyond 4 calendar days.
+            data_stale = days_old > 4
+        except Exception:
+            pass
+    print(f"Market data date: {data_date} ({days_old} days old, stale={data_stale})")
+
     ticker_count = sum(1 for k in cache if not k.startswith("_"))
     results = {
         "generated_at": datetime.utcnow().isoformat(),
+        "data_date": data_date,
+        "data_days_old": days_old,
+        "data_stale": data_stale,
+        "fetched_at": fetched_at,
         "total_analyzed": ticker_count,
         "market_health": market_health,
         "buy": buy_signals,
