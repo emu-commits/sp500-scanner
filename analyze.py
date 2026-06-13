@@ -22,6 +22,7 @@ adaptive but never worse than O'Neil's 8% loss cap; targets at 2R and 3R.
 import json
 import os
 import sys
+from collections import defaultdict
 from datetime import datetime, date
 import pandas as pd
 import numpy as np
@@ -208,7 +209,7 @@ def grade_score(score, max_score):
         return "F"
 
 
-def analyze_ticker(ticker, data, spx_closes, fundies=None):
+def analyze_ticker(ticker, data, spx_closes, fundies=None, sector=None, sector_rs_val=None):
     closes = data.get("c", [])
     highs = data.get("h", [])
     lows = data.get("l", [])
@@ -265,9 +266,30 @@ def analyze_ticker(ticker, data, spx_closes, fundies=None):
     if event_type == "breakdown" and rs >= 0:
         return None
 
-    eg  = (fundies or {}).get("eg")   # earnings growth YoY (decimal); None = unavailable
-    rg  = (fundies or {}).get("rg")   # revenue growth YoY (decimal)
-    roe = (fundies or {}).get("roe")  # return on equity (decimal)
+    f   = fundies or {}
+    eg  = f.get("eg")    # earnings growth YoY (decimal); None = unavailable
+    rg  = f.get("rg")    # revenue growth YoY (decimal)
+    roe = f.get("roe")   # return on equity (decimal)
+    mc  = f.get("mc")    # market cap (dollars)
+    ne  = f.get("ne")    # next earnings date (ISO string)
+
+    # Market-cap gate: micro-caps (<$1B) have erratic breakouts driven by
+    # thin liquidity rather than institutional accumulation — exclude them.
+    if mc is not None and mc < 1_000_000_000:
+        return None
+
+    # Earnings proximity gate: entering within 3 days of earnings is binary
+    # event risk that invalidates any technical stop — skip entirely.
+    earnings_near = False
+    days_to_earn = None
+    if ne:
+        try:
+            days_to_earn = (date.fromisoformat(ne) - date.today()).days
+            if 0 <= days_to_earn <= 3:
+                return None
+            earnings_near = 0 <= days_to_earn <= 14
+        except Exception:
+            pass
 
     # Confirmed earnings deterioration is the leading cause of false breakouts:
     # reject only when data IS present and clearly negative.
@@ -306,21 +328,26 @@ def analyze_ticker(ticker, data, spx_closes, fundies=None):
                  if day_range > 0 else 0.5)
 
     if event_type == "breakout":
-        max_score = 12
+        max_score = 13
         score = 0
         score += 1.5 if vol_ratio >= 2.0 else (1.0 if vol_ratio >= 1.5 else 0.5)
         score += 1.5 if rs >= 0.15 else (1.0 if rs >= 0.05 else 0.5)
-        # Earnings growth: 1.5 pts; award 0.5 (neutral) when data unavailable so
-        # missing fundamentals don't automatically hurt an otherwise clean setup.
+        # Earnings growth: 1.5 pts. Neutral (0.5) when data is unavailable —
+        # don't penalise a valid setup just because Yahoo lags the filing.
         if eg is not None:
             score += 1.5 if eg >= 0.25 else (1.0 if eg >= 0.15 else (0.5 if eg >= 0.0 else 0))
         else:
             score += 0.5
-        # Revenue growth: 0.5 pts corroboration; neutral when unavailable.
+        # Revenue growth: 0.5 pts corroboration.
         if rg is not None:
             score += 0.5 if rg >= 0.10 else (0.25 if rg >= 0.05 else 0)
         else:
             score += 0.25
+        # Sector RS: breakouts in leading sectors have higher follow-through rates.
+        if sector_rs_val is not None:
+            score += 1.0 if sector_rs_val >= 5 else (0.5 if sector_rs_val >= 0 else 0)
+        else:
+            score += 0.5
         score += 1.0 if base_depth <= 0.10 else (0.5 if base_depth <= 0.18 else 0)
         score += 1.0 if close_pos >= 0.7 else (0.5 if close_pos >= 0.5 else 0)
         score += 1.0 if extension <= 0.03 else (0.5 if extension <= 0.05 else 0)
@@ -358,9 +385,14 @@ def analyze_ticker(ticker, data, spx_closes, fundies=None):
         "vol_ratio": round(float(vol_ratio), 2),
         "price": round(float(price), 2),
         "price_change_5d_pct": round(float(price_change_pct), 1),
-        "earnings_growth_pct": round(eg * 100, 1) if eg is not None else None,
-        "revenue_growth_pct":  round(rg * 100, 1) if rg is not None else None,
-        "roe_pct":             round(roe * 100, 1) if roe is not None else None,
+        "earnings_growth_pct": round(eg * 100, 1)  if eg  is not None else None,
+        "revenue_growth_pct":  round(rg * 100, 1)  if rg  is not None else None,
+        "roe_pct":             round(roe * 100, 1)  if roe is not None else None,
+        "market_cap_b":        round(mc / 1e9, 1)   if mc  is not None else None,
+        "next_earnings":       ne,
+        "earnings_near":       earnings_near,
+        "sector":              sector,
+        "sector_rs":           sector_rs_val,
     }
 
     # Trade plan for buys: ATR-adaptive stop capped at O'Neil's 8% max loss,
@@ -399,13 +431,46 @@ def main():
     have_eg = sum(1 for v in fundamentals.values() if v.get("eg") is not None)
     print(f"Fundamentals loaded: {have_eg}/{len(fundamentals)} tickers have EPS growth data.")
 
+    sectors = cache.get("_sectors", {})
+
+    # Sector-level 6-month RS vs SPX — used in signal scoring and email display.
+    sector_members = defaultdict(list)
+    for t, s in sectors.items():
+        if t in cache:
+            sector_members[s].append(t)
+
+    sector_rs_map = {}
+    sector_breadth = {}
+    if len(spx_closes) >= 126:
+        spx_ret_126 = (spx_closes[-1] - spx_closes[-126]) / spx_closes[-126]
+        for sec, members in sector_members.items():
+            rets, above, total = [], 0, 0
+            for t in members:
+                c = cache.get(t, {}).get("c", [])
+                if len(c) >= 126:
+                    rets.append((c[-1] - c[-126]) / c[-126])
+                if len(c) >= 200:
+                    total += 1
+                    if c[-1] > sum(c[-200:]) / 200:
+                        above += 1
+            if rets:
+                sector_rs_map[sec] = round((float(np.mean(rets)) - spx_ret_126) * 100, 1)
+            if total:
+                sector_breadth[sec] = round(above / total * 100, 1)
+
     buy_signals = []
     sell_signals = []
 
     for ticker, data in cache.items():
         if ticker.startswith("_"):
             continue
-        result = analyze_ticker(ticker, data, spx_closes, fundamentals.get(ticker))
+        sec = sectors.get(ticker)
+        result = analyze_ticker(
+            ticker, data, spx_closes,
+            fundies=fundamentals.get(ticker),
+            sector=sec,
+            sector_rs_val=sector_rs_map.get(sec) if sec else None,
+        )
         if result is None:
             continue
         if result["event_type"] == "breakout":
@@ -426,6 +491,8 @@ def main():
     breadth_pct = (above_200 / breadth_total * 100) if breadth_total > 0 else None
 
     market_health = compute_market_health(cache, breadth_pct)
+    market_health["sector_rs"]      = sector_rs_map
+    market_health["sector_breadth"] = sector_breadth
     print(f"Market stress: {market_health['stress_score']}/100 — {market_health['verdict']}")
 
     # Regime overlay: breakouts fail at much higher rates in stressed markets,

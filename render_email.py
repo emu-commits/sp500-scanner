@@ -5,7 +5,21 @@ Reads cache/results.json and outputs a mobile-optimized HTML email to stdout or 
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, date
+
+SECTOR_ABBREV = {
+    "Communication Services": "Comm Svc",
+    "Consumer Discretionary": "Cons Disc",
+    "Consumer Staples":       "Cons Stpl",
+    "Energy":                 "Energy",
+    "Financials":             "Financials",
+    "Health Care":            "Health Care",
+    "Industrials":            "Industrials",
+    "Information Technology": "Tech",
+    "Materials":              "Materials",
+    "Real Estate":            "Real Estate",
+    "Utilities":              "Utilities",
+}
 
 RESULTS_FILE = "cache/results.json"
 
@@ -117,8 +131,43 @@ def market_health_section(health):
         </table>
         <div style="margin-top:8px;font-size:11px;color:{gauge_color};
           font-style:italic;letter-spacing:0.2px;">{verdict}</div>
+        {_sector_table(health)}
       </td>
     </tr>'''
+
+
+def _sector_table(health):
+    sector_rs = health.get("sector_rs") or {}
+    sector_br = health.get("sector_breadth") or {}
+    if not sector_rs:
+        return ""
+    # Sort sectors by 6M RS descending
+    rows = sorted(sector_rs.items(), key=lambda x: x[1], reverse=True)
+    cells = []
+    for sec, rs in rows:
+        abbrev = SECTOR_ABBREV.get(sec, sec[:10])
+        br = sector_br.get(sec)
+        rs_color = "#00c48c" if rs >= 0 else "#ff4d6d"
+        rs_sign = "+" if rs >= 0 else ""
+        br_str = f"{br:.0f}%" if br is not None else "—"
+        cells.append(
+            f'<tr>'
+            f'<td style="padding:2px 4px;font-size:10px;color:#888;">{abbrev}</td>'
+            f'<td style="padding:2px 4px;font-size:10px;font-weight:700;'
+            f'color:{rs_color};text-align:right;font-family:\'Courier New\',monospace;">'
+            f'{rs_sign}{rs:.1f}%</td>'
+            f'<td style="padding:2px 4px;font-size:10px;color:#555;text-align:right;">'
+            f'{br_str}</td>'
+            f'</tr>'
+        )
+    return (
+        f'<div style="margin-top:10px;border-top:1px solid #1e1e1e;padding-top:8px;">'
+        f'<div style="font-size:9px;color:#444;letter-spacing:1px;'
+        f'text-transform:uppercase;margin-bottom:4px;">Sector Leadership (6M RS · Breadth)</div>'
+        f'<table width="100%" cellpadding="0" cellspacing="0">'
+        f'{"".join(cells)}'
+        f'</table></div>'
+    )
 
 
 def signal_row(item, is_buy):
@@ -129,10 +178,26 @@ def signal_row(item, is_buy):
     change = item["price_change_5d_pct"]
     rsi = item["rsi"]
     adx = item["adx"]
+    sector = item.get("sector")
+    sector_abbrev = SECTOR_ABBREV.get(sector, sector) if sector else None
+    mc_b = item.get("market_cap_b")
+    mc_str = (f"${mc_b:.0f}B" if mc_b is not None and mc_b >= 1
+              else (f"${mc_b*1000:.0f}M" if mc_b is not None else ""))
+    earnings_near = item.get("earnings_near", False)
+    next_earn = item.get("next_earnings")
     event_label = "52W Breakout" if is_buy else "52W Breakdown"
     event_color = "#00c48c" if is_buy else "#ff4d6d"
     change_color = "#00c48c" if change >= 0 else "#ff4d6d"
     change_sign = "+" if change >= 0 else ""
+
+    # Days until earnings (for display in the warning pill)
+    earn_days_str = ""
+    if earnings_near and next_earn:
+        try:
+            earn_days = (date.fromisoformat(next_earn) - date.today()).days
+            earn_days_str = f" {earn_days}d"
+        except Exception:
+            pass
 
     # Indicator pills
     indicators = []
@@ -148,13 +213,19 @@ def signal_row(item, is_buy):
     if is_buy:
         eg = item.get("earnings_growth_pct")
         rg = item.get("revenue_growth_pct")
+        sec_rs = item.get("sector_rs")
         if eg is not None:
             eg_sign = "+" if eg >= 0 else ""
             eg_color = "#00c48c" if eg >= 15 else ("#f5c842" if eg >= 0 else "#ff8c42")
-            eg_bg = eg_color + "22"
-            indicators.append((f"EPS {eg_sign}{eg:.0f}%", eg_bg, eg_color))
+            indicators.append((f"EPS {eg_sign}{eg:.0f}%", eg_color + "22", eg_color))
         if rg is not None and rg >= 5:
             indicators.append((f"Rev +{rg:.0f}%", "#06b6d422", "#06b6d4"))
+        if sec_rs is not None:
+            sr_sign = "+" if sec_rs >= 0 else ""
+            sr_color = "#00c48c" if sec_rs >= 5 else ("#888" if sec_rs >= 0 else "#ff8c42")
+            indicators.append((f"Sec {sr_sign}{sec_rs:.1f}%", sr_color + "22", sr_color))
+        if earnings_near:
+            indicators.append((f"⚠ Earn{earn_days_str}", "#33200022", "#f5c842"))
     if item.get("macd_positive") if is_buy else not item.get("macd_positive", True):
         indicators.append(("MACD ✓", "#00c48c22", "#00c48c") if is_buy else ("MACD ✓", "#ff4d6d22", "#ff4d6d"))
     if item.get("obv_accumulating") if is_buy else not item.get("obv_accumulating", True):
@@ -211,6 +282,8 @@ def signal_row(item, is_buy):
                       <span style="font-size:11px;color:{event_color};font-weight:600;
                         letter-spacing:0.5px;text-transform:uppercase;">{event_label}</span>
                       <span style="font-size:10px;color:#666;margin-left:6px;">{days_ago}d ago</span>
+                      {f'<span style="font-size:10px;color:#444;margin-left:8px;">{sector_abbrev}</span>' if sector_abbrev else ''}
+                      {f'<span style="font-size:10px;color:#333;margin-left:4px;">{mc_str}</span>' if mc_str else ''}
                     </td>
                     <td align="right">
                       {grade_badge(grade)}

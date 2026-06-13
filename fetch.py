@@ -31,14 +31,17 @@ def get_sp500_tickers():
     )
     html = urllib.request.urlopen(req).read().decode('utf-8')
     tables = pd.read_html(io.StringIO(html))
-    tickers = tables[0]['Symbol'].str.replace('.', '-', regex=False).tolist()
-    return tickers
+    df = tables[0]
+    df['Symbol'] = df['Symbol'].str.replace('.', '-', regex=False)
+    tickers = df['Symbol'].tolist()
+    sectors = dict(zip(df['Symbol'], df['GICS Sector']))
+    return tickers, sectors
 
 
 def main():
     print("Fetching S&P 500 tickers...")
-    tickers = get_sp500_tickers()
-    print(f"Found {len(tickers)} tickers.")
+    tickers, sectors = get_sp500_tickers()
+    print(f"Found {len(tickers)} tickers across {len(set(sectors.values()))} sectors.")
 
     os.makedirs("cache", exist_ok=True)
 
@@ -65,6 +68,7 @@ def main():
         "fetched_at": datetime.utcnow().isoformat(),
         "candle_date": candle_date,
     }
+    cache["_sectors"] = sectors
 
     for ticker in tickers:
         try:
@@ -165,11 +169,20 @@ def main():
         time.sleep(0.5)   # ~2 req/s per worker — avoids Yahoo rate-limit bans
         try:
             info = yf.Ticker(t).info
+            # Next earnings date: take the soonest future timestamp.
+            import time as _ts
+            now = _ts.time()
+            stamps = info.get("earningsTimestamps") or []
+            future = sorted(x for x in stamps if isinstance(x, (int, float)) and x > now)
+            next_earn = (datetime.utcfromtimestamp(future[0]).date().isoformat()
+                         if future else None)
             return t, {
                 "eg":  info.get("earningsGrowth"),
                 "rg":  info.get("revenueGrowth"),
                 "roe": info.get("returnOnEquity"),
                 "de":  info.get("debtToEquity"),
+                "mc":  info.get("marketCap"),
+                "ne":  next_earn,
             }
         except Exception:
             return t, {}
