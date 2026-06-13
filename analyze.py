@@ -1,7 +1,21 @@
 """
 S&P 500 Breakout Scanner — analyze.py
 Reads cached candle data from cache/candles.json and produces results.json.
-Identifies 52-week high breakouts and low breakdowns with volume/RS confirmation.
+
+Buy methodology (medium-term swing, weeks to ~3 months):
+  Hard gates — all must pass:
+    1. 52-week high breakout within the last 7 trading days (George & Hwang)
+    2. Breakout-day volume >= 1.3x its 50-day average
+    3. Positive 6-month relative strength vs S&P 500 (Jegadeesh & Titman)
+    4. Stage-2 trend template: close > MA50 > MA200, MA200 rising (Weinstein)
+    5. Anti-chase: price no more than 8% above the broken pivot
+  Quality score (/10): volume surge, RS magnitude, pre-breakout base tightness
+  (volatility contraction), conviction close in the day's range, entry
+  proximity to pivot, MACD, ADX, RSI sweet spot, OBV accumulation.
+  Regime overlay: market stress >= 60 demotes all buy grades one letter.
+
+Exit plan per buy: stop = max(entry - 2*ATR14, entry*0.92) — i.e. volatility-
+adaptive but never worse than O'Neil's 8% loss cap; targets at 2R and 3R.
 """
 import json
 import os
@@ -67,12 +81,22 @@ def compute_obv(closes, volumes):
     return obv.iloc[-1] - obv.iloc[-10] if len(obv) >= 10 else 0
 
 
+def compute_atr(highs, lows, closes, period=14):
+    h = pd.Series(highs)
+    l = pd.Series(lows)
+    c = pd.Series(closes)
+    tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+    return float(tr.ewm(alpha=1/period, min_periods=period).mean().iloc[-1])
+
+
 def find_breakout_event(closes, highs, lows, lookback):
     """
     Scan the last `lookback` bars for the most recent 52-week breakout or breakdown.
-    Breakout: close enters >= 98% of the prior 252-bar high (crossed from below).
-    Breakdown: close enters <= 102% of the prior 252-bar low (crossed from above).
-    Returns (event_type, days_ago) or (None, None).
+    Breakout: close crosses the prior 252-bar high from below.
+    Breakdown: close crosses the prior 252-bar low from above.
+    Returns (event_type, days_ago, pivot_level) or (None, None, None).
+    The pivot is the 52W high/low that was broken — it anchors stops and the
+    anti-chase extension gate.
     """
     n = len(closes)
     for i in range(1, lookback + 1):
@@ -84,10 +108,10 @@ def find_breakout_event(closes, highs, lows, lookback):
         prev_close = closes[idx - 1]
         curr_close = closes[idx]
         if prev_close < high_52w * BREAKOUT_ZONE and curr_close >= high_52w * BREAKOUT_ZONE:
-            return "breakout", i
+            return "breakout", i, high_52w
         if prev_close > low_52w * BREAKDOWN_ZONE and curr_close <= low_52w * BREAKDOWN_ZONE:
-            return "breakdown", i
-    return None, None
+            return "breakdown", i, low_52w
+    return None, None, None
 
 
 def compute_rs(closes, spx_closes, period=126):
@@ -191,7 +215,7 @@ def analyze_ticker(ticker, data, spx_closes):
     if len(closes) < 252:
         return None
 
-    event_type, days_ago = find_breakout_event(closes, highs, lows, LOOKBACK_DAYS)
+    event_type, days_ago, pivot = find_breakout_event(closes, highs, lows, LOOKBACK_DAYS)
     if event_type is None:
         return None
 
@@ -239,23 +263,53 @@ def analyze_ticker(ticker, data, spx_closes):
     if event_type == "breakdown" and rs >= 0:
         return None
 
-    high_52w = max(highs[-252:])
-    low_52w = min(lows[-252:])
-    proximity_high = closes[-1] / high_52w if high_52w > 0 else 0.0
-
-    max_score = 7
-    score = 0
+    # Stage-2 trend template (Weinstein/Minervini): a breakout is only buyable
+    # inside an established uptrend — close > MA50 > MA200 with MA200 rising.
+    ma50 = float(np.mean(closes[-50:]))
+    ma200 = float(np.mean(closes[-200:]))
+    ma200_prior = float(np.mean(closes[-220:-20])) if len(closes) >= 220 else ma200
+    price = closes[-1]
+    extension = (price / pivot - 1) if pivot > 0 else 0.0
 
     if event_type == "breakout":
-        score += 1 if vol_ratio >= 1.5 else (0.5 if vol_ratio >= 1.2 else 0)
-        score += 1 if rs > 0.05 else (0.5 if rs > 0 else 0)
-        score += 1 if 50 <= rsi <= 80 else (0.5 if rsi > 80 else 0)
+        if not (price > ma50 > ma200 and ma200 >= ma200_prior):
+            return None
+        # Anti-chase gate: >8% above the pivot means the low-risk entry is gone.
+        if extension > 0.08:
+            return None
+    else:  # breakdown mirror: only flag inside an established downtrend
+        if not (price < ma50 < ma200 and ma200 <= ma200_prior):
+            return None
+
+    high_52w = max(highs[-252:])
+    low_52w = min(lows[-252:])
+    proximity_high = price / high_52w if high_52w > 0 else 0.0
+
+    # Base quality on the breakout day: tight pre-breakout consolidation
+    # (volatility contraction) and a conviction close near the day's high.
+    base_window = closes[max(0, breakout_idx - 21):breakout_idx]
+    base_depth = ((max(base_window) - min(base_window)) / min(base_window)
+                  if base_window and min(base_window) > 0 else 1.0)
+    day_range = highs[breakout_idx] - lows[breakout_idx]
+    close_pos = ((closes[breakout_idx] - lows[breakout_idx]) / day_range
+                 if day_range > 0 else 0.5)
+
+    if event_type == "breakout":
+        max_score = 10
+        score = 0
+        score += 1.5 if vol_ratio >= 2.0 else (1.0 if vol_ratio >= 1.5 else 0.5)
+        score += 1.5 if rs >= 0.15 else (1.0 if rs >= 0.05 else 0.5)
+        score += 1.0 if base_depth <= 0.10 else (0.5 if base_depth <= 0.18 else 0)
+        score += 1.0 if close_pos >= 0.7 else (0.5 if close_pos >= 0.5 else 0)
+        score += 1.0 if extension <= 0.03 else (0.5 if extension <= 0.05 else 0)
         score += 1 if macd_hist > 0 and macd_val > macd_sig else (0.5 if macd_hist > 0 else 0)
         score += 1 if adx >= 25 else (0.5 if adx >= 20 else 0)
-        score += 1 if proximity_high >= 0.99 else (0.5 if proximity_high >= 0.97 else 0)
+        score += 1 if 55 <= rsi <= 75 else (0.5 if 50 <= rsi <= 80 else 0)
         score += 1 if obv_slope > 0 else 0
     else:  # breakdown
-        low_proximity = closes[-1] / low_52w if low_52w > 0 else 2.0
+        max_score = 7
+        score = 0
+        low_proximity = price / low_52w if low_52w > 0 else 2.0
         score += 1 if vol_ratio >= 1.5 else (0.5 if vol_ratio >= 1.2 else 0)
         score += 1 if rs < -0.05 else (0.5 if rs < 0 else 0)
         score += 1 if rsi < 40 else (0.5 if rsi < 50 else 0)
@@ -265,10 +319,9 @@ def analyze_ticker(ticker, data, spx_closes):
         score += 1 if obv_slope < 0 else 0
 
     grade = grade_score(score, max_score)
-    price = closes[-1]
     price_change_pct = ((closes[-1] - closes[-6]) / closes[-6] * 100) if len(closes) >= 6 else 0
 
-    return {
+    result = {
         "ticker": ticker,
         "event_type": event_type,
         "days_ago": int(days_ago),
@@ -284,6 +337,29 @@ def analyze_ticker(ticker, data, spx_closes):
         "price": round(float(price), 2),
         "price_change_5d_pct": round(float(price_change_pct), 1),
     }
+
+    # Trade plan for buys: ATR-adaptive stop capped at O'Neil's 8% max loss,
+    # targets at 2R and 3R off the risk unit (medium-term swing horizon).
+    if event_type == "breakout":
+        try:
+            atr = compute_atr(highs, lows, closes)
+        except Exception:
+            atr = price * 0.02
+        stop = max(price - 2 * atr, price * 0.92)
+        risk = price - stop
+        target_1 = price + 2 * risk
+        target_2 = price + 3 * risk
+        result.update({
+            "atr": round(float(atr), 2),
+            "stop": round(float(stop), 2),
+            "stop_pct": round((stop / price - 1) * 100, 1),
+            "target_1": round(float(target_1), 2),
+            "t1_pct": round((target_1 / price - 1) * 100, 1),
+            "target_2": round(float(target_2), 2),
+            "t2_pct": round((target_2 / price - 1) * 100, 1),
+        })
+
+    return result
 
 
 def main():
@@ -323,6 +399,16 @@ def main():
     market_health = compute_market_health(cache, breadth_pct)
     print(f"Market stress: {market_health['stress_score']}/100 — {market_health['verdict']}")
 
+    # Regime overlay: breakouts fail at much higher rates in stressed markets,
+    # so demote every buy grade one letter when stress is elevated.
+    stress = market_health.get("stress_score")
+    regime_caution = stress is not None and stress >= 60
+    if regime_caution:
+        demote = {"A": "B", "B": "C", "C": "D", "D": "F", "F": "F"}
+        for sig in buy_signals:
+            sig["grade"] = demote[sig["grade"]]
+        print(f"Regime caution: stress {stress} >= 60 — buy grades demoted one letter.")
+
     # Data-freshness check: surface the actual market-data date and flag staleness
     # so a frozen fetch pipeline becomes visible instead of silently reusing cache.
     meta = cache.get("_meta", {})
@@ -349,6 +435,7 @@ def main():
         "data_stale": data_stale,
         "fetched_at": fetched_at,
         "total_analyzed": ticker_count,
+        "regime_caution": regime_caution,
         "market_health": market_health,
         "buy": buy_signals,
         "sell": sell_signals,

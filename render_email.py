@@ -164,6 +164,23 @@ def signal_row(item, is_buy):
         for label, bg, fg in indicators
     ])
 
+    # Trade plan: ATR-based stop (capped at −8%) with 2R/3R exit targets
+    plan_row = ""
+    if is_buy and item.get("stop") is not None:
+        plan_row = (
+            f'<tr><td style="padding-top:8px;">'
+            f'<div style="border-top:1px solid #1e3329;padding-top:7px;'
+            f'font-size:11px;font-family:\'Courier New\',monospace;color:#888;">'
+            f'<span style="font-size:9px;color:#555;letter-spacing:1px;">EXIT PLAN&nbsp;&nbsp;</span>'
+            f'Stop <span style="color:#ff4d6d;font-weight:700;">${item["stop"]}</span>'
+            f'<span style="color:#555;"> ({item["stop_pct"]}%)</span>'
+            f' &nbsp;T1 <span style="color:#00c48c;font-weight:700;">${item["target_1"]}</span>'
+            f'<span style="color:#555;"> (+{item["t1_pct"]}%)</span>'
+            f' &nbsp;T2 <span style="color:#00c48c;font-weight:700;">${item["target_2"]}</span>'
+            f'<span style="color:#555;"> (+{item["t2_pct"]}%)</span>'
+            f'</div></td></tr>'
+        )
+
     bg_color = "#0d1f17" if is_buy else "#1f0d12"
 
     return f'''
@@ -201,6 +218,7 @@ def signal_row(item, is_buy):
                     </td>
                   </tr>
                   {f'<tr><td style="padding-top:6px;">{pills}</td></tr>' if pills else ''}
+                  {plan_row}
                 </table>
               </div>
             </td>
@@ -286,11 +304,14 @@ def render_email(results):
     for item in buy_items:
         grade_summary[item["grade"]] = grade_summary.get(item["grade"], 0) + 1
 
+    buy_subtitle = "52W breakout · uptrend + volume + RS confirmed · last 7 days"
+    if results.get("regime_caution"):
+        buy_subtitle += " · ⚠ grades reduced: market stress elevated"
     buy_section = render_section(
         "Breakout Watch",
         buy_items,
         is_buy=True,
-        subtitle="52-week high breakout with volume confirmation · last 7 days"
+        subtitle=buy_subtitle
     )
     sell_section = render_section(
         "Breakdown Watch",
