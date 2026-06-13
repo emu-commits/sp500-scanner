@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
@@ -151,6 +152,39 @@ def main():
                 print(f"Warning: FRED {series_id}: {e}")
     else:
         print("FRED_API_KEY not set — skipping OAS credit spread data.")
+
+    # Fetch fundamentals for all tickers (only the fields used by analyze.py).
+    # Runs in parallel to keep the total fetch time manageable (~1-2 min extra).
+    # earningsGrowth / revenueGrowth are YoY decimals (0.25 = 25%).
+    # returnOnEquity is a decimal; debtToEquity is a percentage (150 = 1.5x).
+    print(f"Fetching fundamentals for {len(tickers)} tickers (threaded)...")
+    fundamentals = {}
+
+    def _fetch_info(t):
+        try:
+            info = yf.Ticker(t).info
+            return t, {
+                "eg":  info.get("earningsGrowth"),
+                "rg":  info.get("revenueGrowth"),
+                "roe": info.get("returnOnEquity"),
+                "de":  info.get("debtToEquity"),
+            }
+        except Exception:
+            return t, {}
+
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        futs = {ex.submit(_fetch_info, t): t for t in tickers}
+        done = 0
+        for fut in as_completed(futs):
+            t, data = fut.result()
+            fundamentals[t] = data
+            done += 1
+            if done % 100 == 0:
+                print(f"  fundamentals: {done}/{len(tickers)}")
+
+    have_eg = sum(1 for v in fundamentals.values() if v.get("eg") is not None)
+    print(f"Fundamentals done. {have_eg}/{len(tickers)} tickers have EPS growth data.")
+    cache["_fundamentals"] = fundamentals
 
     with open(CACHE_FILE, "w") as f:
         json.dump(cache, f)

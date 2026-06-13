@@ -144,6 +144,17 @@ def signal_row(item, is_buy):
         indicators.append((f"RS +{rs:.1f}%", "#00c48c22", "#00c48c"))
     elif not is_buy and rs < 0:
         indicators.append((f"RS {rs:.1f}%", "#ff4d6d22", "#ff4d6d"))
+
+    if is_buy:
+        eg = item.get("earnings_growth_pct")
+        rg = item.get("revenue_growth_pct")
+        if eg is not None:
+            eg_sign = "+" if eg >= 0 else ""
+            eg_color = "#00c48c" if eg >= 15 else ("#f5c842" if eg >= 0 else "#ff8c42")
+            eg_bg = eg_color + "22"
+            indicators.append((f"EPS {eg_sign}{eg:.0f}%", eg_bg, eg_color))
+        if rg is not None and rg >= 5:
+            indicators.append((f"Rev +{rg:.0f}%", "#06b6d422", "#06b6d4"))
     if item.get("macd_positive") if is_buy else not item.get("macd_positive", True):
         indicators.append(("MACD ✓", "#00c48c22", "#00c48c") if is_buy else ("MACD ✓", "#ff4d6d22", "#ff4d6d"))
     if item.get("obv_accumulating") if is_buy else not item.get("obv_accumulating", True):

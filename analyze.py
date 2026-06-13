@@ -9,9 +9,11 @@ Buy methodology (medium-term swing, weeks to ~3 months):
     3. Positive 6-month relative strength vs S&P 500 (Jegadeesh & Titman)
     4. Stage-2 trend template: close > MA50 > MA200, MA200 rising (Weinstein)
     5. Anti-chase: price no more than 8% above the broken pivot
-  Quality score (/10): volume surge, RS magnitude, pre-breakout base tightness
-  (volatility contraction), conviction close in the day's range, entry
-  proximity to pivot, MACD, ADX, RSI sweet spot, OBV accumulation.
+    6. No confirmed earnings deterioration (earningsGrowth not < −10% YoY)
+  Quality score (/12): volume surge, RS magnitude, earnings growth, revenue
+  growth, pre-breakout base tightness (volatility contraction), conviction
+  close in day's range, entry proximity to pivot, MACD, ADX, RSI, OBV.
+  Missing fundamentals score neutral (0.5/1.5) — don't penalise data lag.
   Regime overlay: market stress >= 60 demotes all buy grades one letter.
 
 Exit plan per buy: stop = max(entry - 2*ATR14, entry*0.92) — i.e. volatility-
@@ -206,7 +208,7 @@ def grade_score(score, max_score):
         return "F"
 
 
-def analyze_ticker(ticker, data, spx_closes):
+def analyze_ticker(ticker, data, spx_closes, fundies=None):
     closes = data.get("c", [])
     highs = data.get("h", [])
     lows = data.get("l", [])
@@ -263,6 +265,15 @@ def analyze_ticker(ticker, data, spx_closes):
     if event_type == "breakdown" and rs >= 0:
         return None
 
+    eg  = (fundies or {}).get("eg")   # earnings growth YoY (decimal); None = unavailable
+    rg  = (fundies or {}).get("rg")   # revenue growth YoY (decimal)
+    roe = (fundies or {}).get("roe")  # return on equity (decimal)
+
+    # Confirmed earnings deterioration is the leading cause of false breakouts:
+    # reject only when data IS present and clearly negative.
+    if event_type == "breakout" and eg is not None and eg < -0.10:
+        return None
+
     # Stage-2 trend template (Weinstein/Minervini): a breakout is only buyable
     # inside an established uptrend — close > MA50 > MA200 with MA200 rising.
     ma50 = float(np.mean(closes[-50:]))
@@ -295,10 +306,21 @@ def analyze_ticker(ticker, data, spx_closes):
                  if day_range > 0 else 0.5)
 
     if event_type == "breakout":
-        max_score = 10
+        max_score = 12
         score = 0
         score += 1.5 if vol_ratio >= 2.0 else (1.0 if vol_ratio >= 1.5 else 0.5)
         score += 1.5 if rs >= 0.15 else (1.0 if rs >= 0.05 else 0.5)
+        # Earnings growth: 1.5 pts; award 0.5 (neutral) when data unavailable so
+        # missing fundamentals don't automatically hurt an otherwise clean setup.
+        if eg is not None:
+            score += 1.5 if eg >= 0.25 else (1.0 if eg >= 0.15 else (0.5 if eg >= 0.0 else 0))
+        else:
+            score += 0.5
+        # Revenue growth: 0.5 pts corroboration; neutral when unavailable.
+        if rg is not None:
+            score += 0.5 if rg >= 0.10 else (0.25 if rg >= 0.05 else 0)
+        else:
+            score += 0.25
         score += 1.0 if base_depth <= 0.10 else (0.5 if base_depth <= 0.18 else 0)
         score += 1.0 if close_pos >= 0.7 else (0.5 if close_pos >= 0.5 else 0)
         score += 1.0 if extension <= 0.03 else (0.5 if extension <= 0.05 else 0)
@@ -336,6 +358,9 @@ def analyze_ticker(ticker, data, spx_closes):
         "vol_ratio": round(float(vol_ratio), 2),
         "price": round(float(price), 2),
         "price_change_5d_pct": round(float(price_change_pct), 1),
+        "earnings_growth_pct": round(eg * 100, 1) if eg is not None else None,
+        "revenue_growth_pct":  round(rg * 100, 1) if rg is not None else None,
+        "roe_pct":             round(roe * 100, 1) if roe is not None else None,
     }
 
     # Trade plan for buys: ATR-adaptive stop capped at O'Neil's 8% max loss,
@@ -370,13 +395,17 @@ def main():
     if not spx_closes:
         print("Warning: no SPX data in cache — RS scores will be 0. Re-run fetch.py.")
 
+    fundamentals = cache.get("_fundamentals", {})
+    have_eg = sum(1 for v in fundamentals.values() if v.get("eg") is not None)
+    print(f"Fundamentals loaded: {have_eg}/{len(fundamentals)} tickers have EPS growth data.")
+
     buy_signals = []
     sell_signals = []
 
     for ticker, data in cache.items():
         if ticker.startswith("_"):
             continue
-        result = analyze_ticker(ticker, data, spx_closes)
+        result = analyze_ticker(ticker, data, spx_closes, fundamentals.get(ticker))
         if result is None:
             continue
         if result["event_type"] == "breakout":
