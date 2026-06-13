@@ -161,6 +161,8 @@ def main():
     fundamentals = {}
 
     def _fetch_info(t):
+        import time
+        time.sleep(0.5)   # ~2 req/s per worker — avoids Yahoo rate-limit bans
         try:
             info = yf.Ticker(t).info
             return t, {
@@ -172,7 +174,9 @@ def main():
         except Exception:
             return t, {}
 
-    with ThreadPoolExecutor(max_workers=12) as ex:
+    # 4 workers × 0.5 s sleep ≈ 8 req/s peak, ~2 min for 500 tickers.
+    # We run once per day so speed doesn't matter; staying under rate limits does.
+    with ThreadPoolExecutor(max_workers=4) as ex:
         futs = {ex.submit(_fetch_info, t): t for t in tickers}
         done = 0
         for fut in as_completed(futs):
