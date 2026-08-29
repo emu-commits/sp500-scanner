@@ -2,7 +2,7 @@ name: "2. Analyze & Send Report"
 
 on:
   schedule:
-    - cron: "0 23 * * 0-4"
+    - cron: "0 23 * * 0-2"
   workflow_dispatch:
 
 jobs:
