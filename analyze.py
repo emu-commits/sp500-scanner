@@ -268,6 +268,15 @@ def analyze_ticker(ticker, data, spx_closes, fundies=None, sector=None, sector_r
 
     f   = fundies or {}
     eg  = f.get("eg")    # earnings growth YoY (decimal); None = unavailable
+    # Yahoo's earningsGrowth is quarterly GAAP EPS vs the same quarter a year
+    # ago. When the year-ago quarter was depressed by a one-off charge (e.g.
+    # ABBV's IPR&D write-offs), the ratio explodes (+2000%+) without saying
+    # anything about the business. Treat |growth| > 300% as not meaningful:
+    # still let it trip the deterioration gate below, but score it neutrally
+    # and don't display it.
+    eg_raw = eg
+    if eg is not None and abs(eg) > 3.0:
+        eg = None
     rg  = f.get("rg")    # revenue growth YoY (decimal)
     roe = f.get("roe")   # return on equity (decimal)
     mc  = f.get("mc")    # market cap (dollars)
@@ -293,7 +302,7 @@ def analyze_ticker(ticker, data, spx_closes, fundies=None, sector=None, sector_r
 
     # Confirmed earnings deterioration is the leading cause of false breakouts:
     # reject only when data IS present and clearly negative.
-    if event_type == "breakout" and eg is not None and eg < -0.10:
+    if event_type == "breakout" and eg_raw is not None and eg_raw < -0.10:
         return None
 
     # Stage-2 trend template (Weinstein/Minervini): a breakout is only buyable
