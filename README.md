@@ -63,6 +63,28 @@ MA50 crossed **below** MA200 within the last **14 trading days**, still in downt
 
 ---
 
+## Market Stress Indicator (0–100)
+
+Weighted score from VIX (25), HY OAS (25), IG OAS (15), CCC OAS (15), 10Y–3M curve (10),
+breadth (10) and **Singapore NODX (15)**, normalised over whichever inputs are available.
+The email shows a one-month daily trend line of the score.
+
+**NODX** comes from Enterprise Singapore's monthly release via the SingStat Table Builder API
+(no key needed). Because US market leadership rests heavily on electronics/semiconductor demand,
+the component is electronics-weighted:
+
+| Sub-component | Pts | Stress rises when |
+|---|---|---|
+| Electronics NODX YoY (weaker of latest month / 3-month) | 8 | growth < +10%, max at < −20% |
+| Electronics momentum (3M YoY vs 3 months earlier) | 4 | decelerating > 5pp, max at > 30pp |
+| Headline NODX YoY (weaker of latest month / 3-month) | 3 | negative, max at < −15% |
+
+A falling or rolling-over electronics reading also adds a chip-cycle warning to the verdict.
+
+Breakout Watch lists **A and B grades only**.
+
+---
+
 ## Composite Grade (A–F)
 
 Seven indicators, each worth 1 point (partial credit possible):

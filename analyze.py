@@ -15,6 +15,13 @@ Buy methodology (medium-term swing, weeks to ~3 months):
   close in day's range, entry proximity to pivot, MACD, ADX, RSI, OBV.
   Missing fundamentals score neutral (0.5/1.5) — don't penalise data lag.
   Regime overlay: market stress >= 60 demotes all buy grades one letter.
+  Only A/B grades are kept on the Breakout Watch (C and worse are dropped).
+
+Market stress (0-100): VIX, HY/IG/CCC OAS, 10Y-3M curve, breadth, and
+Singapore NODX (Enterprise Singapore) — electronics-weighted, since a drop in
+Singapore's electronics exports is an early read on the chip cycle that US
+market leadership rests on. A ~1-month daily history is rebuilt from the
+cached series for the email's trend line.
 
 Exit plan per buy: stop = max(entry - 2*ATR14, entry*0.92) — i.e. volatility-
 adaptive but never worse than O'Neil's 8% loss cap; targets at 2R and 3R.
@@ -22,6 +29,7 @@ adaptive but never worse than O'Neil's 8% loss cap; targets at 2R and 3R.
 import json
 import os
 import sys
+from bisect import bisect_right
 from collections import defaultdict
 from datetime import datetime, date
 import pandas as pd
@@ -126,10 +134,138 @@ def compute_rs(closes, spx_closes, period=126):
     return float(stock_ret - spx_ret)
 
 
+# ── Singapore NODX ────────────────────────────────────────────────────────────
+# Enterprise Singapore releases month M around the 17th of month M+1. Singapore
+# is a bellwether for the global electronics/semiconductor cycle that the US
+# market's leadership is built on, so a drop in electronics NODX is treated as
+# an early warning rather than a lagging confirmation.
+NODX_RELEASE_DAY = 17
+
+
+def _nodx_released_by(ym, as_of):
+    """True if month `ym` ("YYYY-MM") would have been published by `as_of`."""
+    y, m = int(ym[:4]), int(ym[5:7])
+    y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return as_of >= date(y, m, NODX_RELEASE_DAY)
+
+
+def _yoy(series, i, window=1):
+    """YoY % of the `window`-month sum ending at index i vs the year before."""
+    if i - window + 1 < 12 or i >= len(series):
+        return None
+    cur = sum(v for _, v in series[i - window + 1:i + 1])
+    prev = sum(v for _, v in series[i - window - 11:i - 11])
+    return (cur / prev - 1) * 100 if prev > 0 else None
+
+
+def nodx_metrics(nodx, as_of=None):
+    """Latest NODX readings. `as_of` (date) restricts to months already released."""
+    if not nodx:
+        return None
+
+    def trim(key):
+        ser = nodx.get(key) or []
+        if as_of is not None:
+            ser = [o for o in ser if _nodx_released_by(o[0], as_of)]
+        return ser
+
+    elec, total, total_sa = trim("elec"), trim("total"), trim("total_sa")
+    if len(elec) < 18 and len(total) < 13:
+        return None
+
+    out = {"month": (elec or total)[-1][0]}
+    if len(elec) >= 18:
+        i = len(elec) - 1
+        out["elec_yoy"]    = _yoy(elec, i)            # headline single month
+        out["elec_yoy_3m"] = _yoy(elec, i, 3)         # smoothed
+        prev_3m = _yoy(elec, i - 3, 3)
+        out["elec_trend"] = (out["elec_yoy_3m"] - prev_3m
+                             if out["elec_yoy_3m"] is not None and prev_3m is not None else None)
+    if len(total) >= 15:
+        i = len(total) - 1
+        out["total_yoy"]    = _yoy(total, i)
+        out["total_yoy_3m"] = _yoy(total, i, 3)
+    if len(total_sa) >= 2 and total_sa[-2][1] > 0:
+        out["total_mom_sa"] = (total_sa[-1][1] / total_sa[-2][1] - 1) * 100
+    return {k: (round(v, 1) if isinstance(v, float) else v) for k, v in out.items()}
+
+
+def _worst(*vals):
+    vals = [v for v in vals if v is not None]
+    return min(vals) if vals else None
+
+
+def score_stress(vix=None, hy_oas=None, ig_oas=None, ccc_oas=None,
+                 curve=None, breadth_pct=None, nodx=None):
+    """0-100 stress score from whichever inputs are available.
+    Returns (score or None, set of component names that contributed)."""
+    score = 0
+    max_score = 0
+    used = set()
+
+    if vix is not None:                          # 25 pts — starts scoring at 15 (calm floor)
+        max_score += 25; used.add("vix")
+        score += 25 if vix >= 30 else (20 if vix >= 25 else (12 if vix >= 20 else (5 if vix >= 15 else 0)))
+
+    if hy_oas is not None:                       # 25 pts — starts at 2.5% (historical avg floor)
+        max_score += 25; used.add("hy")
+        score += 25 if hy_oas >= 5.5 else (20 if hy_oas >= 4.5 else (12 if hy_oas >= 3.5 else (5 if hy_oas >= 2.5 else 0)))
+
+    if ig_oas is not None:                       # 15 pts — starts at 0.6% (tight-spread floor)
+        max_score += 15; used.add("ig")
+        score += 15 if ig_oas >= 1.5 else (10 if ig_oas >= 1.2 else (6 if ig_oas >= 0.9 else (3 if ig_oas >= 0.6 else 0)))
+
+    if ccc_oas is not None:                      # 15 pts — starts at 7% (below long-term avg ~8%)
+        max_score += 15; used.add("ccc")
+        score += 15 if ccc_oas >= 13 else (10 if ccc_oas >= 11 else (5 if ccc_oas >= 9 else (2 if ccc_oas >= 7 else 0)))
+
+    if curve is not None:                        # 10 pts — inverted curve = stress
+        max_score += 10; used.add("curve")
+        score += 10 if curve <= -0.5 else (6 if curve <= 0 else (2 if curve <= 0.25 else 0))
+
+    if breadth_pct is not None:                  # 10 pts — starts at <60% (normal healthy breadth)
+        max_score += 10; used.add("breadth")
+        score += 10 if breadth_pct < 20 else (6 if breadth_pct < 40 else (3 if breadth_pct < 50 else (1 if breadth_pct < 60 else 0)))
+
+    if nodx:                                     # 15 pts — Singapore NODX (electronics-weighted)
+        # Electronics level (8): the weaker of the latest month and the 3M
+        # average, so one sharp monthly drop registers immediately.
+        e = _worst(nodx.get("elec_yoy"), nodx.get("elec_yoy_3m"))
+        if e is not None:
+            max_score += 8; used.add("nodx_elec")
+            score += 0 if e >= 10 else (2 if e >= 0 else (5 if e >= -10 else (7 if e >= -20 else 8)))
+        # Electronics momentum (4): 3M YoY decelerating vs 3 months ago —
+        # catches a rollover from boom levels even while growth is positive.
+        t = nodx.get("elec_trend")
+        if t is not None:
+            max_score += 4; used.add("nodx_trend")
+            score += 0 if t >= -5 else (2 if t >= -15 else (3 if t >= -30 else 4))
+        # Headline NODX (3)
+        h = _worst(nodx.get("total_yoy"), nodx.get("total_yoy_3m"))
+        if h is not None:
+            max_score += 3; used.add("nodx_total")
+            score += 0 if h >= 0 else (1 if h >= -5 else (2 if h >= -15 else 3))
+
+    return (int(score / max_score * 100) if max_score > 0 else None), used
+
+
+def nodx_warning(nodx):
+    """Short warning text when electronics exports are rolling over, else None."""
+    if not nodx:
+        return None
+    e = _worst(nodx.get("elec_yoy"), nodx.get("elec_yoy_3m"))
+    t = nodx.get("elec_trend")
+    if e is not None and e < 0:
+        return "Singapore electronics exports contracting — chip-cycle downturn risk"
+    if t is not None and t <= -15:
+        return "Singapore electronics export growth rolling over — chip-cycle risk"
+    return None
+
+
 def compute_market_health(cache, breadth_pct):
     """
-    Produces a 0-100 stress score from VIX, yield curve, OAS spreads, and breadth.
-    Thresholds anchored to the tweet's crash-precursor levels.
+    Produces a 0-100 stress score from VIX, yield curve, OAS spreads, breadth
+    and Singapore NODX. Thresholds anchored to crash-precursor levels.
     """
     vix_data = cache.get("_VIX", {}).get("c", [])
     tnx_data = cache.get("_TNX", {}).get("c", [])
@@ -140,35 +276,9 @@ def compute_market_health(cache, breadth_pct):
     hy_oas  = cache.get("_HY_OAS",  {}).get("v")
     ig_oas  = cache.get("_IG_OAS",  {}).get("v")
     ccc_oas = cache.get("_CCC_OAS", {}).get("v")
+    nodx    = nodx_metrics(cache.get("_NODX"))
 
-    score = 0
-    max_score = 0
-
-    if vix is not None:                          # 25 pts — starts scoring at 15 (calm floor)
-        max_score += 25
-        score += 25 if vix >= 30 else (20 if vix >= 25 else (12 if vix >= 20 else (5 if vix >= 15 else 0)))
-
-    if hy_oas is not None:                       # 25 pts — starts at 2.5% (historical avg floor)
-        max_score += 25
-        score += 25 if hy_oas >= 5.5 else (20 if hy_oas >= 4.5 else (12 if hy_oas >= 3.5 else (5 if hy_oas >= 2.5 else 0)))
-
-    if ig_oas is not None:                       # 15 pts — starts at 0.6% (tight-spread floor)
-        max_score += 15
-        score += 15 if ig_oas >= 1.5 else (10 if ig_oas >= 1.2 else (6 if ig_oas >= 0.9 else (3 if ig_oas >= 0.6 else 0)))
-
-    if ccc_oas is not None:                      # 15 pts — starts at 7% (below long-term avg ~8%)
-        max_score += 15
-        score += 15 if ccc_oas >= 13 else (10 if ccc_oas >= 11 else (5 if ccc_oas >= 9 else (2 if ccc_oas >= 7 else 0)))
-
-    if curve is not None:                        # 10 pts — inverted curve = stress
-        max_score += 10
-        score += 10 if curve <= -0.5 else (6 if curve <= 0 else (2 if curve <= 0.25 else 0))
-
-    if breadth_pct is not None:                  # 10 pts — starts at <60% (normal healthy breadth)
-        max_score += 10
-        score += 10 if breadth_pct < 20 else (6 if breadth_pct < 40 else (3 if breadth_pct < 50 else (1 if breadth_pct < 60 else 0)))
-
-    stress_score = int(score / max_score * 100) if max_score > 0 else None
+    stress_score, used = score_stress(vix, hy_oas, ig_oas, ccc_oas, curve, breadth_pct, nodx)
 
     if stress_score is None:
         verdict = "Insufficient data"
@@ -182,9 +292,13 @@ def compute_market_health(cache, breadth_pct):
         verdict = "Elevated stress — risk-off conditions building"
     else:
         verdict = "High stress — crash precursors present"
+    warn = nodx_warning(nodx)
+    if warn:
+        verdict += f" · {warn}"
 
     return {
         "stress_score": stress_score,
+        "components": sorted(used),
         "verdict": verdict,
         "vix":      round(vix, 1)      if vix      is not None else None,
         "curve_10y3m": round(curve, 2) if curve    is not None else None,
@@ -192,7 +306,71 @@ def compute_market_health(cache, breadth_pct):
         "ig_oas":   ig_oas,
         "ccc_oas":  ccc_oas,
         "breadth_pct": round(breadth_pct, 1) if breadth_pct is not None else None,
+        "nodx": nodx,
     }
+
+
+def _asof(dates, values, d):
+    """Last value on or before date string `d` (dates sorted ascending)."""
+    if not dates or not values:
+        return None
+    i = bisect_right(dates, d) - 1
+    return values[i] if i >= 0 else None
+
+
+def compute_stress_history(cache, current, days=22):
+    """
+    Rebuild the daily stress score for roughly the last month (`days` trading
+    days) from the cached time series, so the email can show a trend without
+    any persisted state. A day is only kept if it has every input today's
+    score used — otherwise points wouldn't be comparable.
+    """
+    spx_dates = cache.get("_SPX", {}).get("d") or []
+    if len(spx_dates) < days:
+        return []
+
+    def series(key):
+        d = cache.get(key, {})
+        return d.get("dates") or [], d.get("c") or []
+
+    vix_s, tnx_s, irx_s = series("_VIX"), series("_TNX"), series("_IRX")
+    oas = {}
+    for key in ("_HY_OAS", "_IG_OAS", "_CCC_OAS"):
+        hist = cache.get(key, {}).get("hist") or []
+        oas[key] = ([h[0] for h in hist], [h[1] for h in hist])
+
+    # Breadth per offset k (0 = latest bar): % of names above their 200-day MA.
+    closes = [np.asarray(v["c"], dtype=float) for k, v in cache.items()
+              if not k.startswith("_") and len(v.get("c", [])) >= 200 + days]
+    breadth = []
+    for k in range(days):
+        above = sum(1 for c in closes
+                    if c[len(c) - 1 - k] > c[len(c) - 200 - k:len(c) - k].mean())
+        breadth.append(above / len(closes) * 100 if closes else None)
+
+    need = set(current.get("components") or [])
+    raw_nodx = cache.get("_NODX")
+    hist = []
+    for k in range(days - 1, -1, -1):
+        d = spx_dates[-1 - k]
+        tnx, irx = _asof(*tnx_s, d), _asof(*irx_s, d)
+        s, used = score_stress(
+            vix=_asof(*vix_s, d),
+            hy_oas=_asof(*oas["_HY_OAS"], d),
+            ig_oas=_asof(*oas["_IG_OAS"], d),
+            ccc_oas=_asof(*oas["_CCC_OAS"], d),
+            curve=(tnx - irx) if tnx is not None and irx is not None else None,
+            breadth_pct=breadth[k],
+            nodx=nodx_metrics(raw_nodx, as_of=date.fromisoformat(d)),
+        )
+        if s is not None and need <= used:
+            hist.append({"d": d, "s": s})
+
+    # Anchor the last point to the live score (the live NODX reading may be a
+    # release the date-based availability rule hasn't "published" yet).
+    if hist and hist[-1]["d"] == spx_dates[-1]:
+        hist[-1]["s"] = current.get("stress_score")
+    return hist if len(hist) >= 5 else []
 
 
 def grade_score(score, max_score):
@@ -209,7 +387,7 @@ def grade_score(score, max_score):
         return "F"
 
 
-def analyze_ticker(ticker, data, spx_closes, fundies=None, sector=None, sector_rs_val=None):
+def analyze_ticker(ticker, data, spx_closes, fundies=None, sector=None, sector_rs_val=None, name=None):
     closes = data.get("c", [])
     highs = data.get("h", [])
     lows = data.get("l", [])
@@ -372,6 +550,7 @@ def analyze_ticker(ticker, data, spx_closes, fundies=None, sector=None, sector_r
 
     result = {
         "ticker": ticker,
+        "name": name or f.get("nm"),
         "event_type": event_type,
         "days_ago": int(days_ago),
         "grade": grade,
@@ -432,6 +611,7 @@ def main():
     print(f"Fundamentals loaded: {have_eg}/{len(fundamentals)} tickers have EPS growth data.")
 
     sectors = cache.get("_sectors", {})
+    names = cache.get("_names", {})
 
     # Sector-level 6-month RS vs SPX — used in signal scoring and email display.
     sector_members = defaultdict(list)
@@ -470,6 +650,7 @@ def main():
             fundies=fundamentals.get(ticker),
             sector=sec,
             sector_rs_val=sector_rs_map.get(sec) if sec else None,
+            name=names.get(ticker),
         )
         if result is None:
             continue
@@ -493,7 +674,11 @@ def main():
     market_health = compute_market_health(cache, breadth_pct)
     market_health["sector_rs"]      = sector_rs_map
     market_health["sector_breadth"] = sector_breadth
+    market_health["history"] = compute_stress_history(cache, market_health)
     print(f"Market stress: {market_health['stress_score']}/100 — {market_health['verdict']}")
+    if market_health.get("nodx"):
+        print(f"NODX: {market_health['nodx']}")
+    print(f"Stress history: {len(market_health['history'])} days")
 
     # Regime overlay: breakouts fail at much higher rates in stressed markets,
     # so demote every buy grade one letter when stress is elevated.
@@ -504,6 +689,13 @@ def main():
         for sig in buy_signals:
             sig["grade"] = demote[sig["grade"]]
         print(f"Regime caution: stress {stress} >= 60 — buy grades demoted one letter.")
+
+    # Breakout Watch only lists A/B setups — C and worse are dropped (after the
+    # regime demotion, so a stressed market naturally shortens the list).
+    dropped = sum(1 for sig in buy_signals if sig["grade"] not in ("A", "B"))
+    buy_signals = [sig for sig in buy_signals if sig["grade"] in ("A", "B")]
+    if dropped:
+        print(f"Dropped {dropped} breakout signals graded C or worse.")
 
     # Data-freshness check: surface the actual market-data date and flag staleness
     # so a frozen fetch pipeline becomes visible instead of silently reusing cache.
