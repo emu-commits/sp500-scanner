@@ -2,6 +2,7 @@
 Email renderer — render_email.py
 Reads cache/results.json and outputs a mobile-optimized HTML email to stdout or file.
 """
+import html
 import json
 import os
 import sys
@@ -60,6 +61,116 @@ def _metric_cell(label, value_str, color):
     )
 
 
+def _stress_color(score):
+    if score is None:
+        return "#444"
+    if score < 20:
+        return "#00c48c"
+    if score < 40:
+        return "#4da6ff"
+    if score < 60:
+        return "#f5c842"
+    if score < 80:
+        return "#ff8c42"
+    return "#ff4d6d"
+
+
+def _fmt_day(d):
+    try:
+        return datetime.strptime(d, "%Y-%m-%d").strftime("%b %-d")
+    except Exception:
+        return d
+
+
+def _stress_trend(health):
+    """One-month look-back of the stress score as an email-safe line chart:
+    one table column per trading day, a dot at that day's level and a faint
+    fill beneath it. Pure tables/divs — no SVG or images, so it renders in
+    Gmail, Apple Mail and Outlook alike."""
+    hist = [h for h in (health.get("history") or []) if h.get("s") is not None]
+    if len(hist) < 5:
+        return ""
+
+    scores = [h["s"] for h in hist]
+    # Auto-scale to the data (min 20-pt span) so small moves stay visible.
+    lo = max(0, (min(scores) // 10) * 10)
+    hi = min(100, -(-max(scores) // 10) * 10)
+    if hi - lo < 20:
+        hi = min(100, lo + 20)
+        lo = max(0, hi - 20)
+    chart_h, dot = 44, 4
+
+    cols = []
+    for h in hist:
+        y = int(round((h["s"] - lo) / (hi - lo) * (chart_h - dot)))
+        c = _stress_color(h["s"])
+        cols.append(
+            f'<td style="vertical-align:bottom;padding:0 1px;height:{chart_h}px;" '
+            f'title="{_fmt_day(h["d"])}: {h["s"]}">'
+            f'<div style="height:{dot}px;background:{c};border-radius:2px;font-size:0;line-height:0;"></div>'
+            f'<div style="height:{y}px;background:{c}1f;font-size:0;line-height:0;"></div>'
+            f'</td>'
+        )
+
+    first, last = scores[0], scores[-1]
+    delta = last - first
+    if delta > 0:
+        d_str, d_col = f"▲ +{delta} pts", "#ff8c42"
+    elif delta < 0:
+        d_str, d_col = f"▼ {delta} pts", "#00c48c"
+    else:
+        d_str, d_col = "▬ unchanged", "#888"
+
+    return (
+        f'<div style="margin-top:10px;border-top:1px solid #1e1e1e;padding-top:8px;">'
+        f'<table width="100%" cellpadding="0" cellspacing="0"><tr>'
+        f'<td style="font-size:9px;color:#444;letter-spacing:1px;text-transform:uppercase;">'
+        f'Stress · 1-Month Trend</td>'
+        f'<td align="right" style="font-size:10px;font-weight:700;color:{d_col};'
+        f'font-family:\'Courier New\',monospace;">{d_str} '
+        f'<span style="color:#555;font-weight:400;">({first} → {last})</span></td>'
+        f'</tr></table>'
+        f'<table width="100%" cellpadding="0" cellspacing="0" style="margin-top:6px;"><tr>'
+        f'<td style="border-bottom:1px solid #2a2a2a;border-top:1px dashed #1e1e1e;">'
+        f'<table width="100%" cellpadding="0" cellspacing="0" style="table-layout:fixed;">'
+        f'<tr>{"".join(cols)}</tr></table></td>'
+        f'<td style="width:1px;white-space:nowrap;padding-left:6px;font-size:9px;color:#444;'
+        f'font-family:\'Courier New\',monospace;vertical-align:top;line-height:{chart_h - 10}px;">'
+        f'{hi}<br><span style="line-height:10px;">{lo}</span></td>'
+        f'</tr></table>'
+        f'<table width="100%" cellpadding="0" cellspacing="0" style="margin-top:2px;"><tr>'
+        f'<td style="font-size:9px;color:#444;">{_fmt_day(hist[0]["d"])}</td>'
+        f'<td align="right" style="font-size:9px;color:#444;padding-right:20px;">'
+        f'{_fmt_day(hist[-1]["d"])}</td>'
+        f'</tr></table></div>'
+    )
+
+
+def _nodx_line(nodx):
+    if not nodx:
+        return ""
+    try:
+        month = datetime.strptime(nodx["month"], "%Y-%m").strftime("%b %Y")
+    except Exception:
+        month = nodx.get("month", "")
+
+    def pct(v):
+        return f"{'+' if v >= 0 else ''}{v:.1f}%" if v is not None else "—"
+
+    parts = []
+    if nodx.get("elec_yoy_3m") is not None:
+        parts.append(f"Elec 3M {pct(nodx['elec_yoy_3m'])} YoY")
+    if nodx.get("elec_trend") is not None:
+        t = nodx["elec_trend"]
+        parts.append(f"trend {'+' if t >= 0 else ''}{t:.1f}pp")
+    if nodx.get("total_mom_sa") is not None:
+        parts.append(f"headline {pct(nodx['total_mom_sa'])} MoM (SA)")
+    return (
+        f'<div style="margin-top:6px;font-size:10px;color:#555;">'
+        f'Singapore NODX · {month}: {" · ".join(parts)}</div>'
+    )
+
+
 def market_health_section(health):
     if not health:
         return ""
@@ -72,19 +183,14 @@ def market_health_section(health):
     ig_oas  = health.get("ig_oas")
     ccc_oas = health.get("ccc_oas")
     breadth = health.get("breadth_pct")
+    nodx    = health.get("nodx") or {}
+    elec_yoy  = nodx.get("elec_yoy")
+    total_yoy = nodx.get("total_yoy")
+    elec_trend = nodx.get("elec_trend")
 
-    if score is None:
-        gauge_color, score_str, bar_pct = "#444", "N/A", 0
-    elif score < 20:
-        gauge_color, score_str, bar_pct = "#00c48c", f"{score}/100", score
-    elif score < 40:
-        gauge_color, score_str, bar_pct = "#4da6ff", f"{score}/100", score
-    elif score < 60:
-        gauge_color, score_str, bar_pct = "#f5c842", f"{score}/100", score
-    elif score < 80:
-        gauge_color, score_str, bar_pct = "#ff8c42", f"{score}/100", score
-    else:
-        gauge_color, score_str, bar_pct = "#ff4d6d", f"{score}/100", score
+    gauge_color = _stress_color(score)
+    score_str = f"{score}/100" if score is not None else "N/A"
+    bar_pct = score or 0
 
     def vc(v, lo, mid): return "#00c48c" if v < lo else ("#ff8c42" if v < mid else "#ff4d6d")
 
@@ -98,13 +204,28 @@ def market_health_section(health):
 
     curve_str  = f"{'+' if curve > 0 else ''}{curve:.2f}pp" if curve is not None else "—"
 
-    cells = "".join([
+    # NODX: a contraction is red; positive growth that is rolling over fast is orange.
+    def nodx_c(v, trend=None):
+        if v is None:
+            return "#555"
+        if v < -10:
+            return "#ff4d6d"
+        if v < 0 or (trend is not None and trend <= -15):
+            return "#ff8c42"
+        return "#00c48c"
+    pct = lambda v: f"{'+' if v >= 0 else ''}{v:.1f}%" if v is not None else "—"
+
+    row1 = "".join([
         _metric_cell("VIX",     f"{vix:.1f}"     if vix     is not None else "—", vix_c),
         _metric_cell("HY OAS",  f"{hy_oas:.2f}%" if hy_oas  is not None else "—", hy_c),
         _metric_cell("IG OAS",  f"{ig_oas:.2f}%" if ig_oas  is not None else "—", ig_c),
         _metric_cell("CCC OAS", f"{ccc_oas:.2f}%" if ccc_oas is not None else "—", ccc_c),
+    ])
+    row2 = "".join([
         _metric_cell("10Y–3M",  curve_str,                                          curve_c),
         _metric_cell("BREADTH", f"{breadth:.0f}%" if breadth is not None else "—", breadth_c),
+        _metric_cell("SG ELEC", pct(elec_yoy),  nodx_c(elec_yoy, elec_trend)),
+        _metric_cell("SG NODX", pct(total_yoy), nodx_c(total_yoy)),
     ])
 
     return f'''
@@ -126,11 +247,14 @@ def market_health_section(health):
             </td>
           </tr>
         </table>
-        <table width="100%" cellpadding="0" cellspacing="0">
-          <tr>{cells}</tr>
+        <table width="100%" cellpadding="0" cellspacing="0" style="table-layout:fixed;">
+          <tr>{row1}</tr>
+          <tr>{row2}</tr>
         </table>
+        {_nodx_line(nodx)}
         <div style="margin-top:8px;font-size:11px;color:{gauge_color};
           font-style:italic;letter-spacing:0.2px;">{verdict}</div>
+        {_stress_trend(health)}
         {_sector_table(health)}
       </td>
     </tr>'''
@@ -172,6 +296,11 @@ def _sector_table(health):
 
 def signal_row(item, is_buy):
     ticker = item["ticker"]
+    name = item.get("name")
+    if name and len(name) > 34:
+        name = name[:33].rstrip() + "…"
+    name_html = (f'<div style="font-size:12px;color:#999;margin-top:1px;">{html.escape(name)}</div>'
+                 if name else "")
     grade = item["grade"]
     days_ago = item["days_ago"]
     price = item["price"]
@@ -284,6 +413,7 @@ def signal_row(item, is_buy):
                       <span style="font-size:10px;color:#666;margin-left:6px;">{days_ago}d ago</span>
                       {f'<span style="font-size:10px;color:#444;margin-left:8px;">{sector_abbrev}</span>' if sector_abbrev else ''}
                       {f'<span style="font-size:10px;color:#333;margin-left:4px;">{mc_str}</span>' if mc_str else ''}
+                      {name_html}
                     </td>
                     <td align="right">
                       {grade_badge(grade)}
@@ -379,7 +509,8 @@ def render_email(results):
     else:
         date_str = datetime.utcnow().strftime("%A, %B %-d, %Y")
     stale_banner = _stale_banner(results)
-    buy_items = [x for x in results.get("buy", []) if x["grade"] in ("A", "B", "C")]
+    # Breakout Watch: A/B only (analyze.py already filters; kept for older results files)
+    buy_items = [x for x in results.get("buy", []) if x["grade"] in ("A", "B")]
     sell_items = results.get("sell", [])
     total = results.get("total_analyzed", 0)
     health_row = market_health_section(results.get("market_health"))
@@ -388,7 +519,7 @@ def render_email(results):
     for item in buy_items:
         grade_summary[item["grade"]] = grade_summary.get(item["grade"], 0) + 1
 
-    buy_subtitle = "52W breakout · uptrend + volume + RS confirmed · last 7 days"
+    buy_subtitle = "52W breakout · A/B grades only · uptrend + volume + RS confirmed · last 7 days"
     if results.get("regime_caution"):
         buy_subtitle += " · ⚠ grades reduced: market stress elevated"
     buy_section = render_section(

@@ -35,12 +35,60 @@ def get_sp500_tickers():
     df['Symbol'] = df['Symbol'].str.replace('.', '-', regex=False)
     tickers = df['Symbol'].tolist()
     sectors = dict(zip(df['Symbol'], df['GICS Sector']))
-    return tickers, sectors
+    names = dict(zip(df['Symbol'], df['Security'])) if 'Security' in df.columns else {}
+    return tickers, sectors, names
+
+
+SINGSTAT_URL = "https://tablebuilder.singstat.gov.sg/api/table/tabledata/{table}?seriesNoORrowNo={series}"
+
+# Singapore NODX — Enterprise Singapore's monthly release, published through
+# SingStat's Table Builder API (no key required).
+#   total:    Non-oil domestic exports, current prices (M451001 · 4.2)
+#   total_sa: same, seasonally adjusted (M451002 · 4.2) — for MoM
+#   elec:     Domestic exports of electronic products (M450981 · 1)
+NODX_SERIES = {
+    "total":    ("M451001", "4.2"),
+    "total_sa": ("M451002", "4.2"),
+    "elec":     ("M450981", "1"),
+}
+
+
+def fetch_singstat_series(table, series, months=48):
+    """Return ([["YYYY-MM", value], ...] oldest→newest, dataLastUpdated)."""
+    req = urllib.request.Request(SINGSTAT_URL.format(table=table, series=series),
+                                 headers={"User-Agent": "sp500-scanner/1.0",
+                                          "Accept": "application/json"})
+    data = json.loads(urllib.request.urlopen(req, timeout=30).read().decode())["Data"]
+    rows = [r for r in data.get("row", []) if str(r.get("seriesNo")) == series]
+    if not rows:
+        raise ValueError(f"series {series} not found in {table}")
+    out = []
+    for col in rows[0].get("columns", []):
+        try:
+            ym = datetime.strptime(col["key"], "%Y %b").strftime("%Y-%m")
+            out.append([ym, float(col["value"])])
+        except (ValueError, KeyError, TypeError):
+            continue
+    out.sort()
+    return out[-months:], data.get("dataLastUpdated")
+
+
+def fetch_nodx():
+    nodx = {}
+    for key, (table, series) in NODX_SERIES.items():
+        try:
+            obs, updated = fetch_singstat_series(table, series)
+            nodx[key] = obs
+            nodx["updated"] = updated
+            print(f"NODX {key}: {len(obs)} months, latest {obs[-1][0]} = {obs[-1][1]:,.0f} (S$k)")
+        except Exception as e:
+            print(f"Warning: NODX {key} ({table}/{series}): {e}")
+    return nodx if "elec" in nodx or "total" in nodx else None
 
 
 def main():
     print("Fetching S&P 500 tickers...")
-    tickers, sectors = get_sp500_tickers()
+    tickers, sectors, names = get_sp500_tickers()
     print(f"Found {len(tickers)} tickers across {len(set(sectors.values()))} sectors.")
 
     os.makedirs("cache", exist_ok=True)
@@ -69,6 +117,7 @@ def main():
         "candle_date": candle_date,
     }
     cache["_sectors"] = sectors
+    cache["_names"] = names
 
     for ticker in tickers:
         try:
@@ -99,7 +148,10 @@ def main():
                           auto_adjust=True, progress=False)
         spx = _flatten(spx).dropna(subset=["Close"])
         if len(spx) >= 210:
-            cache["_SPX"] = {"c": [float(x) for x in spx["Close"].tolist()]}
+            cache["_SPX"] = {
+                "c": [float(x) for x in spx["Close"].tolist()],
+                "d": [ix.date().isoformat() for ix in spx.index],
+            }
             # SPX is the cleanest single-ticker download — use its last bar as
             # the canonical market-data date.
             cache["_meta"]["data_date"] = spx.index[-1].date().isoformat()
@@ -109,16 +161,18 @@ def main():
     except Exception as e:
         print(f"Warning: could not fetch ^GSPC: {e}")
 
-    # Fetch VIX and Treasury yields for market stress indicator
+    # Fetch VIX and Treasury yields for market stress indicator.
+    # 3 months of history so analyze.py can draw the stress trend line.
     print("Fetching macro indicators (VIX, yields)...")
     for ticker, key in [("^VIX", "_VIX"), ("^TNX", "_TNX"), ("^IRX", "_IRX")]:
         try:
-            df = yf.download(ticker, period="5d", interval="1d",
+            df = yf.download(ticker, period="3mo", interval="1d",
                              auto_adjust=True, progress=False)
             df = _flatten(df).dropna(subset=["Close"])
             if not df.empty:
                 cache[key] = {
                     "c": [float(x) for x in df["Close"].tolist()],
+                    "dates": [ix.date().isoformat() for ix in df.index],
                     "d": df.index[-1].date().isoformat(),
                 }
                 print(f"{key}: {df['Close'].iloc[-1]:.2f} ({cache[key]['d']})")
@@ -147,7 +201,12 @@ def main():
                 data = json.loads(urllib.request.urlopen(req).read().decode())
                 obs = [o for o in data.get("observations", []) if o["value"] != "."]
                 if obs:
-                    cache[cache_key] = {"v": float(obs[0]["value"]), "d": obs[0]["date"]}
+                    cache[cache_key] = {
+                        "v": float(obs[0]["value"]),
+                        "d": obs[0]["date"],
+                        # oldest→newest, for the stress trend line
+                        "hist": [[o["date"], float(o["value"])] for o in reversed(obs)],
+                    }
                     print(f"{cache_key}: {obs[0]['value']} ({obs[0]['date']})")
                 else:
                     all_obs = data.get("observations", [])
@@ -156,6 +215,13 @@ def main():
                 print(f"Warning: FRED {series_id}: {e}")
     else:
         print("FRED_API_KEY not set — skipping OAS credit spread data.")
+
+    print("Fetching Singapore NODX (Enterprise Singapore via SingStat)...")
+    nodx = fetch_nodx()
+    if nodx:
+        cache["_NODX"] = nodx
+    else:
+        print("Warning: no NODX data — stress score will exclude it.")
 
     # Fetch fundamentals for all tickers (only the fields used by analyze.py).
     # Runs in parallel to keep the total fetch time manageable (~1-2 min extra).
@@ -183,6 +249,7 @@ def main():
                 "de":  info.get("debtToEquity"),
                 "mc":  info.get("marketCap"),
                 "ne":  next_earn,
+                "nm":  info.get("shortName") or info.get("longName"),
             }
         except Exception:
             return t, {}
